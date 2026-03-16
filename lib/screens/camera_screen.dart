@@ -589,7 +589,8 @@ class _CameraScreenState extends State<CameraScreen> {
         final p = byJoint[j];
         if (p != null) pts.add(Offset(p.location.x, p.location.y));
       }
-      if (pts.length >= 21) _handSkeletonPoints = pts;
+      // iOS apple_vision_hand bazen 21'den az nokta döner; 15+ yeterli
+      if (pts.length >= 15) _handSkeletonPoints = pts;
 
       _updateHandState(
         _HandState(
@@ -752,7 +753,7 @@ class _CameraScreenState extends State<CameraScreen> {
         fit: StackFit.expand,
         children: [
           _buildCameraPreview(),
-          if (_pose != null || (_handSkeletonPoints != null && _handSkeletonPoints!.length >= 21))
+          if (_pose != null || (_handSkeletonPoints != null && _handSkeletonPoints!.length >= 15))
             Positioned.fill(
               child: SkeletonOverlay(
                 pose: _pose,

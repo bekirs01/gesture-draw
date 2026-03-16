@@ -75,6 +75,30 @@ class _SkeletonPainter extends CustomPainter {
   static const _eraseColor = Color(0xFFFF1744);
   static const _jointColor = Color(0xFFFFFFFF);
 
+  // Parmak renkleri: başparmak kırmızı, işaret cyan, orta sarı, yüzük mavi, serçe mor
+  static const _thumbColor = Color(0xFFFF0000);
+  static const _indexColor = Color(0xFF00FFFF);
+  static const _middleColor = Color(0xFFFFFF00);
+  static const _ringColor = Color(0xFF0080FF);
+  static const _pinkyColor = Color(0xFF8000FF);
+  static const _wristColor = Color(0xFFFFFFFF);
+  static const _palmColor = Color(0xFF00FF9F);
+
+  static Color _fingerColor(int idx) {
+    if (idx == 0) return _wristColor;
+    if (idx <= 4) return _thumbColor;
+    if (idx <= 8) return _indexColor;
+    if (idx <= 12) return _middleColor;
+    if (idx <= 16) return _ringColor;
+    return _pinkyColor;
+  }
+
+  static Color _connectionColor(int a, int b) {
+    final isPalm = (a == 5 && b == 9) || (a == 9 && b == 13) || (a == 13 && b == 17);
+    if (isPalm) return _palmColor;
+    return _fingerColor(a < b ? a : b);
+  }
+
   void _drawGlowLine(Canvas canvas, Offset a, Offset b, Color color, Color glow, double width) {
     final glowPaint = Paint()
       ..color = glow
@@ -94,20 +118,20 @@ class _SkeletonPainter extends CustomPainter {
 
   void _drawGlowPoint(Canvas canvas, Offset p, Color color, double radius) {
     final glowPaint = Paint()
-      ..color = color.withValues(alpha: 0.4)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4);
-    canvas.drawCircle(p, radius + 3, glowPaint);
+      ..color = color.withValues(alpha: 0.5)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6);
+    canvas.drawCircle(p, radius + 4, glowPaint);
 
     final pointPaint = Paint()
-      ..color = _jointColor
+      ..color = color
       ..style = PaintingStyle.fill;
     canvas.drawCircle(p, radius, pointPaint);
 
     final ringPaint = Paint()
-      ..color = color
+      ..color = _jointColor
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.5;
-    canvas.drawCircle(p, radius + 1, ringPaint);
+      ..strokeWidth = 2;
+    canvas.drawCircle(p, radius, ringPaint);
   }
 
   void _drawPoseLine(Canvas canvas, PoseLandmark? a, PoseLandmark? b) {
@@ -222,14 +246,8 @@ class _SkeletonPainter extends CustomPainter {
   }
 
   void _drawHand(Canvas canvas) {
-    if (handPoints == null || handPoints!.length < 21) return;
-
-    final color = isPinching ? _pinchColor : isErasing ? _eraseColor : _handColor;
-    final glow = isPinching
-        ? _pinchColor.withValues(alpha: 0.4)
-        : isErasing
-            ? _eraseColor.withValues(alpha: 0.4)
-            : _handGlow;
+    // iOS 15+ nokta dönebilir, Android 21
+    if (handPoints == null || handPoints!.length < 15) return;
 
     final fingerGroups = [
       [0, 1, 2, 3, 4],
@@ -257,8 +275,9 @@ class _SkeletonPainter extends CustomPainter {
           final sp1 = toScreen(p1.dx, p1.dy);
           final w0 = i == 0 ? baseW * 1.2 : baseW - i * 0.8;
           final w1 = baseW - (i + 1) * 0.8;
-          _drawFilledSegment(canvas, sp0, sp1, color, w0.clamp(2.0, 8.0), w1.clamp(1.5, 6.0));
-          _drawGlowLine(canvas, sp0, sp1, color, glow, 2.5);
+          final segColor = _connectionColor(idx0, idx1);
+          _drawFilledSegment(canvas, sp0, sp1, segColor, w0.clamp(2.0, 8.0), w1.clamp(1.5, 6.0));
+          _drawGlowLine(canvas, sp0, sp1, segColor, segColor.withValues(alpha: 0.5), 3.5);
         }
       }
     }
@@ -269,8 +288,8 @@ class _SkeletonPainter extends CustomPainter {
         final p1 = handPoints![c[1]];
         final sp0 = toScreen(p0.dx, p0.dy);
         final sp1 = toScreen(p1.dx, p1.dy);
-        _drawFilledSegment(canvas, sp0, sp1, color.withValues(alpha: 0.5), baseW * 0.6, baseW * 0.6);
-        _drawGlowLine(canvas, sp0, sp1, color.withValues(alpha: 0.7), glow, 2.0);
+        _drawFilledSegment(canvas, sp0, sp1, _palmColor.withValues(alpha: 0.5), baseW * 0.6, baseW * 0.6);
+        _drawGlowLine(canvas, sp0, sp1, _palmColor.withValues(alpha: 0.7), _palmColor.withValues(alpha: 0.4), 2.0);
       }
     }
 
@@ -288,7 +307,7 @@ class _SkeletonPainter extends CustomPainter {
         ..lineTo(mcp17.dx, mcp17.dy)
         ..close();
       final palmPaint = Paint()
-        ..color = color.withValues(alpha: 0.15)
+        ..color = _palmColor.withValues(alpha: 0.15)
         ..style = PaintingStyle.fill;
       canvas.drawPath(palmPath, palmPaint);
     }
@@ -300,14 +319,15 @@ class _SkeletonPainter extends CustomPainter {
     for (int i = 0; i < handPoints!.length; i++) {
       final p = handPoints![i];
       final sp = toScreen(p.dx, p.dy);
+      final ptColor = _fingerColor(i);
       if (tipIndices.contains(i)) {
-        _drawGlowPoint(canvas, sp, color, 6);
+        _drawGlowPoint(canvas, sp, ptColor, 8);
       } else if (pipIndices.contains(i)) {
-        _drawGlowPoint(canvas, sp, color, 5);
+        _drawGlowPoint(canvas, sp, ptColor, 7);
       } else if (mcpIndices.contains(i) || i == 0) {
-        _drawGlowPoint(canvas, sp, color, 5);
+        _drawGlowPoint(canvas, sp, ptColor, 7);
       } else {
-        _drawGlowPoint(canvas, sp, color, 4);
+        _drawGlowPoint(canvas, sp, ptColor, 6);
       }
     }
 
