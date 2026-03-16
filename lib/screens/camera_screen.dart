@@ -26,6 +26,7 @@ class _CameraScreenState extends State<CameraScreen> {
   List<CameraDescription> _cameras = [];
   int _cameraIndex = 0;
   bool _isInitialized = false;
+  bool _isSwitchingCamera = false;
   String _statusText = 'Başlatılıyor...';
   bool _permissionDenied = false;
   bool _isDetecting = false;
@@ -54,7 +55,7 @@ class _CameraScreenState extends State<CameraScreen> {
   int _twoFingerHeldFrames = 0;
   int _framesSinceDraw = 999;
   int _framesSinceErase = 999;
-  static const _gestureLockFrames = 3;
+  static const _gestureLockFrames = 6;
   static const _pinchReleaseFrames = 8;
 
   List<Map<String, double>> _currentStrokePoints = [];
@@ -69,21 +70,25 @@ class _CameraScreenState extends State<CameraScreen> {
   static const _pdfAspect = 210 / 297;
 
   (double, double) _camToPdf(double camX, double camY) {
+    double x = camX, y = camY;
+    if (_cameras.isNotEmpty && _cameras[_cameraIndex].lensDirection == CameraLensDirection.back) {
+      y = 1.0 - y;
+    }
     final imgW = _lastImageSize.width;
     final imgH = _lastImageSize.height;
-    if (imgW <= 0 || imgH <= 0) return (camX, camY);
+    if (imgW <= 0 || imgH <= 0) return (x, y);
     final camAr = imgW / imgH;
     if (camAr > _pdfAspect) {
       final cropW = _pdfAspect / camAr;
       final cropLeft = (1 - cropW) / 2;
-      final pdfX = ((camX - cropLeft) / cropW).clamp(0.0, 1.0);
-      final pdfY = camY.clamp(0.0, 1.0);
+      final pdfX = ((x - cropLeft) / cropW).clamp(0.0, 1.0);
+      final pdfY = y.clamp(0.0, 1.0);
       return (pdfX, pdfY);
     } else {
       final cropH = camAr / _pdfAspect;
       final cropTop = (1 - cropH) / 2;
-      final pdfX = camX.clamp(0.0, 1.0);
-      final pdfY = ((camY - cropTop) / cropH).clamp(0.0, 1.0);
+      final pdfX = x.clamp(0.0, 1.0);
+      final pdfY = ((y - cropTop) / cropH).clamp(0.0, 1.0);
       return (pdfX, pdfY);
     }
   }
@@ -191,6 +196,50 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
+  bool get _hasMultipleCameras =>
+      _cameras.any((c) => c.lensDirection == CameraLensDirection.front) &&
+      _cameras.any((c) => c.lensDirection == CameraLensDirection.back);
+
+  Future<void> _switchCamera() async {
+    if (!_hasMultipleCameras || _controller == null || _isSwitchingCamera) return;
+    final isFront = _cameras[_cameraIndex].lensDirection == CameraLensDirection.front;
+    final targetDirection = isFront ? CameraLensDirection.back : CameraLensDirection.front;
+    final newIndex = _cameras.indexWhere((c) => c.lensDirection == targetDirection);
+    if (newIndex < 0) return;
+
+    setState(() {
+      _isSwitchingCamera = true;
+      _statusText = 'Kamera değiştiriliyor...';
+    });
+    try {
+      await _controller!.stopImageStream();
+      await _controller!.dispose();
+      _controller = null;
+
+      _cameraIndex = newIndex;
+      await _initCamera();
+
+      if (mounted) {
+        final hasHandTracking = (Platform.isAndroid && _handPlugin != null) ||
+            (Platform.isIOS && _appleVisionController != null);
+        if (hasHandTracking) {
+          await _controller!.startImageStream(_processCameraImage);
+        }
+        setState(() {
+          _isSwitchingCamera = false;
+          _statusText = 'Başparmak+İşaret = Çiz | İşaret+Orta = Sil';
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isSwitchingCamera = false;
+          _statusText = 'Kamera hatası: $e';
+        });
+      }
+    }
+  }
+
   void _processCameraImage(CameraImage image) {
     if (!mounted) return;
     _lastImageSize = Size(image.width.toDouble(), image.height.toDouble());
@@ -235,11 +284,13 @@ class _CameraScreenState extends State<CameraScreen> {
 
           final imgW = image.width.toDouble();
           final imgH = image.height.toDouble();
+          final isBack = _cameras[_cameraIndex].lensDirection == CameraLensDirection.back;
           final pts = <Offset>[];
           for (final l in lm) {
+            final ly = l.y.clamp(0.0, 1.0);
             pts.add(Offset(
               l.x.clamp(0.0, 1.0) * imgW,
-              l.y.clamp(0.0, 1.0) * imgH,
+              isBack ? imgH - ly * imgH : ly * imgH,
             ));
           }
           _handSkeletonPoints = pts;
@@ -269,7 +320,7 @@ class _CameraScreenState extends State<CameraScreen> {
           }
 
           final eraseActive =
-              _twoFingerHeldFrames >= 1 && _framesSinceDraw >= _gestureLockFrames;
+              _twoFingerHeldFrames >= 3 && _framesSinceDraw >= _gestureLockFrames;
 
           final rawPinch = pinchDist <
               (_wasPinching ? pinchReleaseThreshold : pinchStartThreshold);
@@ -444,8 +495,8 @@ class _CameraScreenState extends State<CameraScreen> {
         final eraseDist = math.sqrt(
             math.pow(indexTip.location.x - middleTip.location.x, 2) +
                 math.pow(indexTip.location.y - middleTip.location.y, 2)) / maxDim;
-        if (eraseDist < 0.11) { _twoFingerHeldFrames++; } else { _twoFingerHeldFrames = 0; }
-        eraseActive = _twoFingerHeldFrames >= 1 && _framesSinceDraw >= _gestureLockFrames;
+        if (eraseDist < 0.07) { _twoFingerHeldFrames++; } else { _twoFingerHeldFrames = 0; }
+        eraseActive = _twoFingerHeldFrames >= 3 && _framesSinceDraw >= _gestureLockFrames;
       }
 
       bool pinchActive;
@@ -495,12 +546,14 @@ class _CameraScreenState extends State<CameraScreen> {
         FingerJoint.ringMCP, FingerJoint.ringPIP, FingerJoint.ringDIP, FingerJoint.ringTip,
         FingerJoint.littleMCP, FingerJoint.littlePIP, FingerJoint.littleDIP, FingerJoint.littleTip,
       ];
+      final isBack = _cameras[_cameraIndex].lensDirection == CameraLensDirection.back;
       for (final j in order) {
         final p = byJoint[j];
         if (p != null) {
+          final py = p.location.y.clamp(0.0, imgSize.height);
           skelPts.add(Offset(
             p.location.x.clamp(0.0, imgSize.width),
-            p.location.y.clamp(0.0, imgSize.height),
+            isBack ? imgSize.height - py : py,
           ));
         }
       }
@@ -556,7 +609,7 @@ class _CameraScreenState extends State<CameraScreen> {
         _pointerY = null;
         _sync.sendPointerHidden();
         if (_currentStrokePoints.isNotEmpty) {
-          _sync.sendDrawEvent(0, 0, isDrawing: false);
+          _sync.sendDrawEvent(0, 0, isDrawing: false, discardStroke: true);
           _currentStrokePoints = [];
         }
         _sync.sendEraseAtPosition(pdfEx, pdfEy);
@@ -627,6 +680,12 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   Widget _buildCameraPreview() {
+    if (_controller == null || _isSwitchingCamera) {
+      return Container(
+        color: Colors.black,
+        child: const Center(child: CircularProgressIndicator(color: Color(0xFF00FF9F))),
+      );
+    }
     final ctrl = _controller!;
     if (!ctrl.value.isInitialized) {
       return const Center(child: CircularProgressIndicator(color: Color(0xFF00FF9F)));
@@ -835,6 +894,20 @@ class _CameraScreenState extends State<CameraScreen> {
                     const SizedBox(width: 12),
                     Text('${_sync.cachedStrokes.length}', style: TextStyle(color: Colors.white.withValues(alpha: 0.6), fontSize: 12)),
                     const Spacer(),
+                    if (_hasMultipleCameras)
+                      IconButton(
+                        onPressed: _isSwitchingCamera ? null : _switchCamera,
+                        icon: Icon(
+                          _cameras.isNotEmpty && _cameras[_cameraIndex].lensDirection == CameraLensDirection.front
+                              ? Icons.camera_rear
+                              : Icons.camera_front,
+                          color: Colors.white,
+                          size: 24,
+                        ),
+                        tooltip: _cameras.isNotEmpty && _cameras[_cameraIndex].lensDirection == CameraLensDirection.front
+                            ? 'Arka kameraya geç'
+                            : 'Ön kameraya geç',
+                      ),
                     IconButton(
                       onPressed: () async {
                         await _sync.clearAllStrokes();

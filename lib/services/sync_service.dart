@@ -62,7 +62,7 @@ class SyncService {
   int _lastErasePersistTime = 0;
   static const _broadcastDebounceMs = 50;
   static const _eraseApplyDebounceMs = 22;
-  static const _erasePersistDebounceMs = 80;
+  static const _erasePersistDebounceMs = 35;
 
   static const _eraseRadius = 0.12;
   static const _eraseRadiusSq = _eraseRadius * _eraseRadius;
@@ -257,7 +257,7 @@ class SyncService {
     } catch (_) {}
   }
 
-  void sendDrawEvent(double camX, double camY, {required bool isDrawing}) {
+  void sendDrawEvent(double camX, double camY, {required bool isDrawing, bool discardStroke = false}) {
     if (shareToken == null) return;
 
     final docX = mirrorX(camX);
@@ -275,6 +275,10 @@ class SyncService {
       }
     } else if (_isDrawing) {
       _isDrawing = false;
+      if (discardStroke) {
+        _currentStrokePoints = [];
+        return;
+      }
       if (_currentStrokePoints.length >= 2) {
         final simplified = simplifyPoints(_currentStrokePoints, _dpEpsilon);
         final stroke = StrokeData(points: simplified, color: _drawColor);
@@ -298,7 +302,6 @@ class SyncService {
 
     final modified = _eraseLayerAtPosition(_cachedStrokes, docX, docY);
     _cachedStrokes = modified;
-    _broadcastStrokeComplete(modified);
     _scheduleErasePersist();
   }
 
