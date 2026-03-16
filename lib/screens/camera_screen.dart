@@ -37,8 +37,8 @@ class _CameraScreenState extends State<CameraScreen> {
   int _fpsFrameCount = 0;
   int _fpsLastTime = 0;
 
-  static const _cursorSmooth = 0.05;
-  static const _eraseSmooth = 0.1;
+  static const _cursorSmooth = 0.0;
+  static const _eraseSmooth = 0.0;
   double _smoothCursorX = 0.5;
   double _smoothCursorY = 0.5;
   double _smoothEraserX = 0.5;
@@ -48,8 +48,11 @@ class _CameraScreenState extends State<CameraScreen> {
   double? _cursorY;
   double? _eraserX;
   double? _eraserY;
+  double? _pointerX;
+  double? _pointerY;
   bool _isPinching = false;
   bool _isErasing = false;
+  bool _isPointering = false;
   bool _wasPinching = false;
   bool _wasErasing = false; // ignore: unused_field
   int _pinchReleaseCounter = 0;
@@ -161,7 +164,7 @@ class _CameraScreenState extends State<CameraScreen> {
     final cam = _cameras[_cameraIndex];
     _controller = CameraController(
       cam,
-      ResolutionPreset.medium,
+      ResolutionPreset.low,
       enableAudio: false,
       imageFormatGroup: Platform.isIOS ? ImageFormatGroup.bgra8888 : ImageFormatGroup.yuv420,
     );
@@ -295,6 +298,9 @@ class _CameraScreenState extends State<CameraScreen> {
           _wasPinching = pinchActive;
           _wasErasing = eraseActive;
 
+          final pointerActive = indexExtended && !middleExtended && ringCurled && pinkyCurled &&
+              !pinchActive && !eraseActive;
+
           double rawCursorX, rawCursorY;
           if (pinchActive) {
             rawCursorX = (lm[8].x + lm[4].x) / 2;
@@ -318,6 +324,7 @@ class _CameraScreenState extends State<CameraScreen> {
             eraserY: _smoothEraserY,
             isPinching: pinchActive,
             isErasing: eraseActive,
+            isPointering: pointerActive,
           ));
         } else {
           _handSkeletonPoints = null;
@@ -493,10 +500,13 @@ class _CameraScreenState extends State<CameraScreen> {
       }
       if (skelPts.length >= 15) _handSkeletonPoints = skelPts;
 
+      final pointerActive = !pinchActive && !eraseActive;
+
       _updateHandState(_HandResult(
         cursorX: _smoothCursorX, cursorY: _smoothCursorY,
         eraserX: _smoothEraserX, eraserY: _smoothEraserY,
         isPinching: pinchActive, isErasing: eraseActive,
+        isPointering: pointerActive,
       ));
     } catch (_) {
       if (mounted) { _handSkeletonPoints = null; _updateHandState(null); }
@@ -513,11 +523,13 @@ class _CameraScreenState extends State<CameraScreen> {
         _currentStrokePoints = [];
         _cursorX = null; _cursorY = null;
         _eraserX = null; _eraserY = null;
-        _isPinching = false; _isErasing = false;
+        _pointerX = null; _pointerY = null;
+        _isPinching = false; _isErasing = false; _isPointering = false;
         _handSkeletonPoints = null;
         _wasPinching = false; _wasErasing = false;
         _pinchReleaseCounter = 0; _twoFingerHeldFrames = 0;
         _statusText = 'El algılanmıyor';
+        _sync.sendPointerHidden();
       });
       return;
     }
@@ -529,8 +541,12 @@ class _CameraScreenState extends State<CameraScreen> {
       _eraserY = state.eraserY;
       _isPinching = state.isPinching;
       _isErasing = state.isErasing;
+      _isPointering = state.isPointering;
 
       if (state.isErasing) {
+        _pointerX = null;
+        _pointerY = null;
+        _sync.sendPointerHidden();
         if (_currentStrokePoints.isNotEmpty) {
           _sync.sendDrawEvent(0, 0, isDrawing: false);
           _currentStrokePoints = [];
@@ -538,17 +554,57 @@ class _CameraScreenState extends State<CameraScreen> {
         _sync.sendEraseAtPosition(state.eraserX, state.eraserY);
         _statusText = 'Silgi modu (işaret+orta)';
       } else if (state.isPinching) {
+        _pointerX = null;
+        _pointerY = null;
+        _sync.sendPointerHidden();
         _sync.sendDrawEvent(state.cursorX, state.cursorY, isDrawing: true);
         _currentStrokePoints.add({'x': state.cursorX, 'y': state.cursorY});
         _statusText = 'Çizim (başparmak+işaret)';
+      } else if (state.isPointering) {
+        _pointerX = state.cursorX;
+        _pointerY = state.cursorY;
+        _sync.sendPointerPosition(state.cursorX, state.cursorY);
+        final pts = _currentStrokePoints;
+        if (pts.length >= 2) {
+          final dist = math.sqrt(math.pow(pts.last['x']! - pts.first['x']!, 2) +
+              math.pow(pts.last['y']! - pts.first['y']!, 2));
+          if (dist < 0.02) {
+            _sync.sendTapAtPosition(pts.first['x']!, pts.first['y']!);
+          } else {
+            _sync.sendDrawEvent(state.cursorX, state.cursorY, isDrawing: false);
+          }
+        } else if (pts.length == 1) {
+          _sync.sendTapAtPosition(pts.first['x']!, pts.first['y']!);
+        }
+        _currentStrokePoints = [];
+        _statusText = 'İşaret (sunumda konum)';
       } else {
-        if (_currentStrokePoints.length >= 2) {
+        _pointerX = null;
+        _pointerY = null;
+        _sync.sendPointerHidden();
+        final pts = _currentStrokePoints;
+        final isTap = pts.length < 2 ||
+            (pts.length >= 2 &&
+                math.sqrt(math.pow(pts.last['x']! - pts.first['x']!, 2) +
+                        math.pow(pts.last['y']! - pts.first['y']!, 2)) <
+                    0.02);
+        if (isTap && pts.isNotEmpty) {
+          _sync.sendTapAtPosition(pts.first['x']!, pts.first['y']!);
+        } else if (pts.length >= 2) {
           _sync.sendDrawEvent(state.cursorX, state.cursorY, isDrawing: false);
         }
         _currentStrokePoints = [];
-        _statusText = 'Başparmak+İşaret = Çiz | İşaret+Orta = Sil';
+        _statusText = 'İşaret=Konum | Pinch=Çiz/Tıkla | 2 parmak=Sil';
       }
     });
+  }
+
+  Color _colorFromHex(String hex) {
+    try {
+      return Color(int.parse('FF${hex.replaceFirst('#', '')}', radix: 16));
+    } catch (_) {
+      return const Color(0xFF00FF9F);
+    }
   }
 
   @override
@@ -662,6 +718,7 @@ class _CameraScreenState extends State<CameraScreen> {
             painter: _StrokeOverlayPainter(
               savedStrokes: _sync.cachedStrokes,
               currentPoints: _currentStrokePoints,
+              currentColor: _sync.drawColor,
             ),
           ),
 
@@ -679,17 +736,37 @@ class _CameraScreenState extends State<CameraScreen> {
               ),
             ),
 
-          if (!_isErasing && _cursorX != null && _cursorY != null)
+          if (_isPointering && _pointerX != null && _pointerY != null)
+            Positioned(
+              left: _pointerX! * screenW - 16,
+              top: _pointerY! * screenH - 16,
+              child: IgnorePointer(
+                child: Container(
+                  width: 32,
+                  height: 32,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.red.withValues(alpha: 0.4),
+                    border: Border.all(color: Colors.red, width: 3),
+                    boxShadow: [
+                      BoxShadow(color: Colors.red.withValues(alpha: 0.6), blurRadius: 12, spreadRadius: 2),
+                    ],
+                  ),
+                ),
+              ),
+            )
+          else if (!_isErasing && _cursorX != null && _cursorY != null)
             Positioned(
               left: _cursorX! * screenW - (_isPinching ? 14 : 10),
               top: _cursorY! * screenH - (_isPinching ? 14 : 10),
               child: Container(
-                width: _isPinching ? 28 : 20, height: _isPinching ? 28 : 20,
+                width: _isPinching ? 28 : 20,
+                height: _isPinching ? 28 : 20,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: _isPinching ? const Color(0xFF00FF9F).withValues(alpha: 0.25) : Colors.transparent,
+                    color: _isPinching ? _colorFromHex(_sync.drawColor).withValues(alpha: 0.25) : Colors.transparent,
                   border: Border.all(
-                    color: _isPinching ? const Color(0xFF00FF9F) : Colors.white.withValues(alpha: 0.6),
+                    color: _isPinching ? _colorFromHex(_sync.drawColor) : Colors.white.withValues(alpha: 0.6),
                     width: _isPinching ? 3 : 1.5,
                   ),
                 ),
@@ -746,16 +823,18 @@ class _CameraScreenState extends State<CameraScreen> {
 
 class _HandResult {
   final double cursorX, cursorY, eraserX, eraserY;
-  final bool isPinching, isErasing;
+  final bool isPinching, isErasing, isPointering;
   _HandResult({required this.cursorX, required this.cursorY,
     required this.eraserX, required this.eraserY,
-    required this.isPinching, required this.isErasing});
+    required this.isPinching, required this.isErasing,
+    this.isPointering = false});
 }
 
 class _StrokeOverlayPainter extends CustomPainter {
   final List<StrokeData> savedStrokes;
   final List<Map<String, double>> currentPoints;
-  _StrokeOverlayPainter({required this.savedStrokes, required this.currentPoints});
+  final String currentColor;
+  _StrokeOverlayPainter({required this.savedStrokes, required this.currentPoints, this.currentColor = '#00ff9f'});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -772,7 +851,11 @@ class _StrokeOverlayPainter extends CustomPainter {
       }
     }
     if (currentPoints.length >= 2) {
-      final paint = Paint()..color = const Color(0xFF00FF9F)..strokeWidth = 6..strokeCap = StrokeCap.round..style = PaintingStyle.stroke;
+      final paint = Paint()
+        ..color = _parseColor(currentColor)
+        ..strokeWidth = 6
+        ..strokeCap = StrokeCap.round
+        ..style = PaintingStyle.stroke;
       for (int i = 1; i < currentPoints.length; i++) {
         canvas.drawLine(
           Offset(currentPoints[i - 1]['x']! * size.width, currentPoints[i - 1]['y']! * size.height),
@@ -787,5 +870,6 @@ class _StrokeOverlayPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _StrokeOverlayPainter old) => true;
+  bool shouldRepaint(covariant _StrokeOverlayPainter old) =>
+      savedStrokes != old.savedStrokes || currentPoints != old.currentPoints || currentColor != old.currentColor;
 }

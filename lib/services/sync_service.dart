@@ -50,8 +50,11 @@ class SyncService {
   List<StrokeData> _cachedStrokes = [];
   List<Map<String, double>> _currentStrokePoints = [];
   bool _isDrawing = false;
+  String _drawColor = '#00ff9f';
 
   WebSocket? _realtimeSocket;
+  int _lastPointerBroadcastTime = 0;
+  static const _pointerBroadcastDebounceMs = 8;
   Timer? _heartbeatTimer;
   int _lastBroadcastTime = 0;
   int _lastEraseApplyTime = 0;
@@ -98,6 +101,42 @@ class SyncService {
   String? get projectId => shareToken;
 
   List<StrokeData> get cachedStrokes => List.unmodifiable(_cachedStrokes);
+
+  void setDrawColor(String hex) => _drawColor = hex;
+
+  void sendPointerPosition(double x, double y) {
+    if (shareToken == null) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (now - _lastPointerBroadcastTime < _pointerBroadcastDebounceMs) return;
+    _lastPointerBroadcastTime = now;
+    final docX = mirrorX(x);
+    _sendBroadcast({
+      'type': 'broadcast',
+      'event': 'pointer_position',
+      'payload': {'pageNum': pageNum, 'x': docX, 'y': y},
+    });
+  }
+
+  void sendPointerHidden() {
+    if (shareToken == null) return;
+    _sendBroadcast({
+      'type': 'broadcast',
+      'event': 'pointer_hidden',
+      'payload': {'pageNum': pageNum},
+    });
+  }
+
+  void sendTapAtPosition(double x, double y) {
+    if (shareToken == null) return;
+    final docX = mirrorX(x);
+    _sendBroadcast({
+      'type': 'broadcast',
+      'event': 'tap_at',
+      'payload': {'pageNum': pageNum, 'x': docX, 'y': y},
+    });
+  }
+
+  String get drawColor => _drawColor;
 
   // Bu cihazdaki kamera akışında el koordinatları zaten doğru yönde geliyor.
   // Tekrar aynalama yapınca çizim tersine dönüyor.
@@ -163,7 +202,7 @@ class SyncService {
         'pageNum': pageNum,
         'stroke': {
           'points': points,
-          'color': '#00ff9f',
+          'color': _drawColor,
           'lineWidth': 4,
         },
       },
@@ -304,7 +343,7 @@ class SyncService {
   }
 
   void _saveStroke(List<Map<String, double>> points) async {
-    final stroke = StrokeData(points: points);
+    final stroke = StrokeData(points: points, color: _drawColor);
     try {
       final existing = await _fetchStrokes();
       final all = [...existing, stroke];
