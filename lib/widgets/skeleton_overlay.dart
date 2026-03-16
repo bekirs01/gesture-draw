@@ -1,4 +1,3 @@
-import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 
@@ -69,11 +68,10 @@ class _SkeletonPainter extends CustomPainter {
 
   static const _bodyColor = Color(0xFF00E5FF);
   static const _bodyGlow = Color(0x6600E5FF);
-  static const _handColor = Color(0xFF00FF9F);
-  static const _handGlow = Color(0x6600FF9F);
   static const _pinchColor = Color(0xFFFFD600);
   static const _eraseColor = Color(0xFFFF1744);
   static const _jointColor = Color(0xFFFFFFFF);
+  static const _liteHandRender = true;
 
   // Parmak renkleri: başparmak kırmızı, işaret cyan, orta sarı, yüzük mavi, serçe mor
   static const _thumbColor = Color(0xFFFF0000);
@@ -166,12 +164,6 @@ class _SkeletonPainter extends CustomPainter {
       [PoseLandmarkType.leftKnee, PoseLandmarkType.leftAnkle],
       [PoseLandmarkType.rightHip, PoseLandmarkType.rightKnee],
       [PoseLandmarkType.rightKnee, PoseLandmarkType.rightAnkle],
-      [PoseLandmarkType.leftWrist, PoseLandmarkType.leftPinky],
-      [PoseLandmarkType.leftWrist, PoseLandmarkType.leftIndex],
-      [PoseLandmarkType.leftWrist, PoseLandmarkType.leftThumb],
-      [PoseLandmarkType.rightWrist, PoseLandmarkType.rightPinky],
-      [PoseLandmarkType.rightWrist, PoseLandmarkType.rightIndex],
-      [PoseLandmarkType.rightWrist, PoseLandmarkType.rightThumb],
       [PoseLandmarkType.leftAnkle, PoseLandmarkType.leftHeel],
       [PoseLandmarkType.leftAnkle, PoseLandmarkType.leftFootIndex],
       [PoseLandmarkType.rightAnkle, PoseLandmarkType.rightHeel],
@@ -204,9 +196,6 @@ class _SkeletonPainter extends CustomPainter {
     final minorJoints = [
       PoseLandmarkType.leftEye, PoseLandmarkType.rightEye,
       PoseLandmarkType.leftEar, PoseLandmarkType.rightEar,
-      PoseLandmarkType.leftPinky, PoseLandmarkType.rightPinky,
-      PoseLandmarkType.leftIndex, PoseLandmarkType.rightIndex,
-      PoseLandmarkType.leftThumb, PoseLandmarkType.rightThumb,
       PoseLandmarkType.leftHeel, PoseLandmarkType.rightHeel,
       PoseLandmarkType.leftFootIndex, PoseLandmarkType.rightFootIndex,
     ];
@@ -246,8 +235,52 @@ class _SkeletonPainter extends CustomPainter {
   }
 
   void _drawHand(Canvas canvas) {
-    // iOS 15+ nokta dönebilir, Android 21
     if (handPoints == null || handPoints!.length < 15) return;
+
+    if (_liteHandRender) {
+      final maxValidJump = screenSize.shortestSide * 0.30;
+
+      const connections = [
+        [0, 1], [1, 2], [2, 3], [3, 4],
+        [0, 5], [5, 6], [6, 7], [7, 8],
+        [0, 9], [9, 10], [10, 11], [11, 12],
+        [0, 13], [13, 14], [14, 15], [15, 16],
+        [0, 17], [17, 18], [18, 19], [19, 20],
+        [5, 9], [9, 13], [13, 17],
+      ];
+
+      for (final c in connections) {
+        if (c[0] < handPoints!.length && c[1] < handPoints!.length) {
+          final a = toScreen(handPoints![c[0]].dx, handPoints![c[0]].dy);
+          final b = toScreen(handPoints![c[1]].dx, handPoints![c[1]].dy);
+          if ((a - b).distance > maxValidJump) continue;
+          final color = _connectionColor(c[0], c[1]);
+          final paint = Paint()
+            ..color = color
+            ..strokeWidth = 3.0
+            ..style = PaintingStyle.stroke
+            ..strokeCap = StrokeCap.round;
+          canvas.drawLine(a, b, paint);
+        }
+      }
+
+      const tipIndices = {4, 8, 12, 16, 20};
+      for (int i = 0; i < handPoints!.length; i++) {
+        final p = toScreen(handPoints![i].dx, handPoints![i].dy);
+        final color = _fingerColor(i);
+        final pointPaint = Paint()..color = color..style = PaintingStyle.fill;
+        final radius = tipIndices.contains(i) ? 5.0 : 3.0;
+        canvas.drawCircle(p, radius, pointPaint);
+        if (tipIndices.contains(i)) {
+          final ringPaint = Paint()
+            ..color = Colors.white
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.5;
+          canvas.drawCircle(p, radius, ringPaint);
+        }
+      }
+      return;
+    }
 
     final fingerGroups = [
       [0, 1, 2, 3, 4],
@@ -293,7 +326,7 @@ class _SkeletonPainter extends CustomPainter {
       }
     }
 
-    final wrist = handPoints!.length > 0 ? toScreen(handPoints![0].dx, handPoints![0].dy) : null;
+    final wrist = handPoints!.isNotEmpty ? toScreen(handPoints![0].dx, handPoints![0].dy) : null;
     if (wrist != null && handPoints!.length >= 17) {
       final mcp5 = toScreen(handPoints![5].dx, handPoints![5].dy);
       final mcp9 = toScreen(handPoints![9].dx, handPoints![9].dy);

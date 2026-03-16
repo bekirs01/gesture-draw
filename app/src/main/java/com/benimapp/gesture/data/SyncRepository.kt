@@ -14,6 +14,7 @@ import okhttp3.WebSocketListener
 import java.net.URLDecoder
 import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
+import kotlin.math.hypot
 
 class SyncRepository(private val projectLink: String) {
 
@@ -23,8 +24,6 @@ class SyncRepository(private val projectLink: String) {
 
     private var currentStrokePoints = mutableListOf<PointData>()
     private var isDrawing = false
-    private var lastEraseTime = 0L
-    private val eraseDebounceMs = 1500L
     private var lastBroadcastTime = 0L
     private val broadcastDebounceMs = 50L
 
@@ -32,10 +31,20 @@ class SyncRepository(private val projectLink: String) {
     private val pageNum = 1
 
     private var realtimeSocket: WebSocket? = null
+    private var cachedStrokes = mutableListOf<StrokeData>()
+
+    companion object {
+        private const val TAG = "SyncRepository"
+        private const val ERASE_RADIUS = 0.09f
+        private const val ERASE_RADIUS_SQ = ERASE_RADIUS * ERASE_RADIUS
+        private const val MIN_STROKE_DIST = 0.002f
+        private const val DP_EPSILON = 0.002f
+    }
 
     init {
         if (shareToken != null) {
             connectRealtime()
+            loadInitialStrokes()
         }
     }
 
@@ -48,15 +57,25 @@ class SyncRepository(private val projectLink: String) {
             }
             val segments = link.split("/").filter { it.isNotBlank() }
             segments.lastOrNull()?.takeIf { it.length > 3 && !it.startsWith("http") }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             null
         }
     }
 
-    /**
-     * Supabase Realtime WebSocket bağlantısı.
-     * Broadcast ile diğer istemcilere anlık stroke verisi gönderir.
-     */
+    private fun loadInitialStrokes() {
+        scope.launch {
+            try {
+                val existing = fetchPageStrokes()
+                synchronized(cachedStrokes) {
+                    cachedStrokes.clear()
+                    cachedStrokes.addAll(existing)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "İlk stroke yükleme hatası", e)
+            }
+        }
+    }
+
     private fun connectRealtime() {
         val wsUrl = SupabaseConfig.SUPABASE_URL
             .replace("https://", "wss://")
@@ -89,7 +108,6 @@ class SyncRepository(private val projectLink: String) {
             }
         })
 
-        // Heartbeat gönder
         scope.launch {
             while (true) {
                 kotlinx.coroutines.delay(30_000)
@@ -118,12 +136,7 @@ class SyncRepository(private val projectLink: String) {
             )
         )
         val msg = """{"topic":"realtime:pdf_page_strokes:$shareToken","event":"broadcast","payload":${gson.toJson(payload)},"ref":"bp"}"""
-
-        try {
-            realtimeSocket?.send(msg)
-        } catch (e: Exception) {
-            Log.w(TAG, "Broadcast gönderilemedi", e)
-        }
+        try { realtimeSocket?.send(msg) } catch (e: Exception) { Log.w(TAG, "Broadcast hatası", e) }
     }
 
     private fun broadcastStrokeComplete(strokes: List<StrokeData>) {
@@ -142,66 +155,108 @@ class SyncRepository(private val projectLink: String) {
             )
         )
         val msg = """{"topic":"realtime:pdf_page_strokes:$shareToken","event":"broadcast","payload":${gson.toJson(payload)},"ref":"bs"}"""
-
-        try {
-            realtimeSocket?.send(msg)
-        } catch (e: Exception) {
-            Log.w(TAG, "Broadcast gönderilemedi", e)
-        }
+        try { realtimeSocket?.send(msg) } catch (e: Exception) { Log.w(TAG, "Broadcast hatası", e) }
     }
 
-    fun sendDrawEvent(x: Float, y: Float, isDrawing: Boolean) {
+    fun mirrorX(camX: Float): Float = 1f - camX
+
+    fun sendDrawEvent(camX: Float, camY: Float, isDrawing: Boolean) {
         if (shareToken == null) return
+
+        val docX = mirrorX(camX)
+        val docY = camY
 
         when {
             isDrawing -> {
                 this.isDrawing = true
                 val last = currentStrokePoints.lastOrNull()
-                if (last == null || kotlin.math.hypot(x - last.x, y - last.y) > 0.01f) {
-                    currentStrokePoints.add(PointData(x, y))
+                val dist = if (last != null) hypot((docX - last.x).toDouble(), (docY - last.y).toDouble()).toFloat() else Float.MAX_VALUE
+                if (dist > MIN_STROKE_DIST) {
+                    currentStrokePoints.add(PointData(docX, docY))
                     broadcastStrokeProgress(currentStrokePoints.toList())
                 }
             }
             this.isDrawing -> {
                 this.isDrawing = false
                 if (currentStrokePoints.size >= 2) {
-                    saveStroke(currentStrokePoints.toList())
+                    val simplified = simplifyPoints(currentStrokePoints, DP_EPSILON)
+                    saveStroke(simplified)
                 }
                 currentStrokePoints.clear()
             }
         }
     }
 
-    fun sendEraseEvent() {
+    fun sendEraseAtPosition(camX: Float, camY: Float) {
         if (shareToken == null) return
-        val now = System.currentTimeMillis()
-        if (now - lastEraseTime < eraseDebounceMs) return
-        lastEraseTime = now
+
+        val docX = mirrorX(camX)
+        val docY = camY
 
         scope.launch {
-            try {
-                api.deletePageStrokes(shareToken, pageNum)
-                currentStrokePoints.clear()
-                broadcastStrokeComplete(emptyList())
-            } catch (e: Exception) {
-                savePageStrokes(emptyList())
+            val modified: List<StrokeData>
+            synchronized(cachedStrokes) {
+                modified = eraseLayerAtPosition(cachedStrokes, docX, docY)
+                cachedStrokes.clear()
+                cachedStrokes.addAll(modified)
             }
+            savePageStrokes(modified)
+            broadcastStrokeComplete(modified)
         }
     }
 
+    private fun eraseLayerAtPosition(
+        strokes: List<StrokeData>,
+        ex: Float, ey: Float
+    ): List<StrokeData> {
+        val result = mutableListOf<StrokeData>()
+        for (stroke in strokes) {
+            val segments = splitStrokeByEraser(stroke.points, ex, ey)
+            for (seg in segments) {
+                if (seg.size >= 2) {
+                    result.add(stroke.copy(points = seg))
+                }
+            }
+        }
+        return result
+    }
+
+    private fun splitStrokeByEraser(
+        points: List<PointData>,
+        ex: Float, ey: Float
+    ): List<List<PointData>> {
+        val segments = mutableListOf<List<PointData>>()
+        var currentSeg = mutableListOf<PointData>()
+
+        for (p in points) {
+            val dx = p.x - ex
+            val dy = p.y - ey
+            val distSq = dx * dx + dy * dy
+            if (distSq < ERASE_RADIUS_SQ) {
+                if (currentSeg.size >= 2) segments.add(currentSeg.toList())
+                currentSeg = mutableListOf()
+            } else {
+                currentSeg.add(p)
+            }
+        }
+        if (currentSeg.size >= 2) segments.add(currentSeg.toList())
+        return segments
+    }
+
     private fun saveStroke(points: List<PointData>) {
-        val stroke = StrokeData(
-            points = points,
-            color = "#00ff9f",
-            lineWidth = 4
-        )
+        val stroke = StrokeData(points = points, color = "#00ff9f", lineWidth = 4)
         scope.launch {
             try {
                 val existing = fetchPageStrokes()
                 val newStrokes = existing + stroke
+                synchronized(cachedStrokes) {
+                    cachedStrokes.clear()
+                    cachedStrokes.addAll(newStrokes)
+                }
                 savePageStrokes(newStrokes)
                 broadcastStrokeComplete(newStrokes)
             } catch (e: Exception) {
+                synchronized(cachedStrokes) { cachedStrokes.add(stroke) }
                 savePageStrokes(listOf(stroke))
                 broadcastStrokeComplete(listOf(stroke))
             }
@@ -241,14 +296,55 @@ class SyncRepository(private val projectLink: String) {
         }
     }
 
+    fun getCachedStrokes(): List<StrokeData> {
+        synchronized(cachedStrokes) {
+            return cachedStrokes.toList()
+        }
+    }
+
     fun getProjectIdFromLink(): String? = shareToken
 
     fun destroy() {
         realtimeSocket?.close(1000, "Uygulama kapandı")
         realtimeSocket = null
     }
+}
 
-    companion object {
-        private const val TAG = "SyncRepository"
+fun simplifyPoints(points: List<PointData>, epsilon: Float): List<PointData> {
+    if (points.size <= 2) return points
+
+    var maxDist = 0f
+    var maxIdx = 0
+
+    val start = points.first()
+    val end = points.last()
+
+    for (i in 1 until points.size - 1) {
+        val d = perpendicularDistance(points[i], start, end)
+        if (d > maxDist) {
+            maxDist = d
+            maxIdx = i
+        }
     }
+
+    return if (maxDist > epsilon) {
+        val left = simplifyPoints(points.subList(0, maxIdx + 1), epsilon)
+        val right = simplifyPoints(points.subList(maxIdx, points.size), epsilon)
+        left.dropLast(1) + right
+    } else {
+        listOf(start, end)
+    }
+}
+
+private fun perpendicularDistance(point: PointData, lineStart: PointData, lineEnd: PointData): Float {
+    val dx = lineEnd.x - lineStart.x
+    val dy = lineEnd.y - lineStart.y
+    val lenSq = dx * dx + dy * dy
+    if (lenSq == 0f) return hypot((point.x - lineStart.x).toDouble(), (point.y - lineStart.y).toDouble()).toFloat()
+
+    val t = ((point.x - lineStart.x) * dx + (point.y - lineStart.y) * dy) / lenSq
+    val tc = t.coerceIn(0f, 1f)
+    val projX = lineStart.x + tc * dx
+    val projY = lineStart.y + tc * dy
+    return hypot((point.x - projX).toDouble(), (point.y - projY).toDouble()).toFloat()
 }

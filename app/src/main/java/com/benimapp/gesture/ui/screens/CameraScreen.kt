@@ -42,6 +42,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
@@ -51,6 +52,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.benimapp.gesture.data.PointData
+import com.benimapp.gesture.data.StrokeData
 import com.benimapp.gesture.data.SyncRepository
 import com.benimapp.gesture.gesture.HandLandmarkerHelper
 import com.benimapp.gesture.gesture.HandState
@@ -114,6 +116,14 @@ fun CameraScreen(
     var currentHandState by remember { mutableStateOf<HandState?>(null) }
     var statusText by remember { mutableStateOf("El bekleniyor...") }
     val currentDrawingPoints = remember { mutableStateListOf<PointData>() }
+    var savedStrokes by remember { mutableStateOf<List<StrokeData>>(emptyList()) }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            savedStrokes = syncRepository.getCachedStrokes()
+            kotlinx.coroutines.delay(500)
+        }
+    }
 
     DisposableEffect(Unit) {
         onDispose {
@@ -150,18 +160,23 @@ fun CameraScreen(
                                     currentDrawingPoints.clear()
                                 }
                             } else if (state.isErasing) {
-                                statusText = "İşaret+Orta - Siliniyor"
-                                syncRepository.sendEraseEvent()
-                                currentDrawingPoints.clear()
+                                statusText = "Silgi modu (işaret+orta)"
+                                syncRepository.sendEraseAtPosition(state.eraserX, state.eraserY)
+                                if (currentDrawingPoints.isNotEmpty()) {
+                                    currentDrawingPoints.clear()
+                                }
+                                savedStrokes = syncRepository.getCachedStrokes()
                             } else if (state.isPinching) {
                                 statusText = "Çizim (başparmak+işaret)"
-                                syncRepository.sendDrawEvent(state.indexTipX, state.indexTipY, isDrawing = true)
-                                currentDrawingPoints.add(PointData(state.indexTipX, state.indexTipY))
+                                syncRepository.sendDrawEvent(state.cursorX, state.cursorY, isDrawing = true)
+                                val docX = syncRepository.mirrorX(state.cursorX)
+                                currentDrawingPoints.add(PointData(docX, state.cursorY))
                             } else {
                                 statusText = "Başparmak+İşaret = Çiz | İşaret+Orta = Sil"
                                 if (currentDrawingPoints.isNotEmpty()) {
-                                    syncRepository.sendDrawEvent(state.indexTipX, state.indexTipY, isDrawing = false)
+                                    syncRepository.sendDrawEvent(state.cursorX, state.cursorY, isDrawing = false)
                                     currentDrawingPoints.clear()
+                                    savedStrokes = syncRepository.getCachedStrokes()
                                 }
                             }
                         },
@@ -215,36 +230,89 @@ fun CameraScreen(
             modifier = Modifier.fillMaxSize()
         )
 
-        // Çizim noktalarını kamera önizlemesi üzerinde göster
         Canvas(modifier = Modifier.fillMaxSize()) {
-            val points = currentDrawingPoints.toList()
-            if (points.size >= 2) {
-                for (i in 1 until points.size) {
+            val w = size.width
+            val h = size.height
+
+            for (stroke in savedStrokes) {
+                val pts = stroke.points
+                if (pts.size >= 2) {
+                    val strokeColor = try {
+                        Color(android.graphics.Color.parseColor(stroke.color))
+                    } catch (_: Exception) {
+                        Color(0xFF00FF9F)
+                    }
+                    for (i in 1 until pts.size) {
+                        drawLine(
+                            color = strokeColor,
+                            start = Offset(pts[i - 1].x * w, pts[i - 1].y * h),
+                            end = Offset(pts[i].x * w, pts[i].y * h),
+                            strokeWidth = stroke.lineWidth.toFloat() * 1.5f,
+                            cap = StrokeCap.Round
+                        )
+                    }
+                }
+            }
+
+            val drawPts = currentDrawingPoints.toList()
+            if (drawPts.size >= 2) {
+                for (i in 1 until drawPts.size) {
                     drawLine(
                         color = Color(0xFF00FF9F),
-                        start = Offset(points[i - 1].x * size.width, points[i - 1].y * size.height),
-                        end = Offset(points[i].x * size.width, points[i].y * size.height),
+                        start = Offset(drawPts[i - 1].x * w, drawPts[i - 1].y * h),
+                        end = Offset(drawPts[i].x * w, drawPts[i].y * h),
                         strokeWidth = 6f,
                         cap = StrokeCap.Round
                     )
                 }
             }
 
-            // Parmak pozisyonu göstergesi
             currentHandState?.let { state ->
-                val cx = state.indexTipX * size.width
-                val cy = state.indexTipY * size.height
-                val indicatorColor = if (state.isPinching) Color(0xFF00FF9F) else Color(0x88FFFFFF)
-                drawCircle(
-                    color = indicatorColor,
-                    radius = if (state.isPinching) 16f else 10f,
-                    center = Offset(cx, cy),
-                    style = Stroke(width = 3f)
-                )
+                if (state.isErasing) {
+                    val ex = state.eraserX * w
+                    val ey = state.eraserY * h
+                    val eraserRadius = 0.09f * w
+                    drawCircle(
+                        color = Color(0xAAFF4444),
+                        radius = eraserRadius,
+                        center = Offset(ex, ey),
+                        style = Stroke(
+                            width = 3f,
+                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f))
+                        )
+                    )
+                    drawCircle(
+                        color = Color(0x33FF4444),
+                        radius = eraserRadius,
+                        center = Offset(ex, ey)
+                    )
+                } else {
+                    val cx = state.cursorX * w
+                    val cy = state.cursorY * h
+                    if (state.isPinching) {
+                        drawCircle(
+                            color = Color(0xFF00FF9F),
+                            radius = 16f,
+                            center = Offset(cx, cy),
+                            style = Stroke(width = 3f)
+                        )
+                        drawCircle(
+                            color = Color(0x4400FF9F),
+                            radius = 8f,
+                            center = Offset(cx, cy)
+                        )
+                    } else if (state.handDetected) {
+                        drawCircle(
+                            color = Color(0x88FFFFFF),
+                            radius = 10f,
+                            center = Offset(cx, cy),
+                            style = Stroke(width = 2f)
+                        )
+                    }
+                }
             }
         }
 
-        // Üst bilgi paneli
         Column(
             modifier = Modifier
                 .align(Alignment.TopStart)
@@ -276,7 +344,7 @@ fun CameraScreen(
                 val dotColor = when {
                     currentHandState?.isPinching == true -> Color(0xFF00FF9F)
                     currentHandState?.isErasing == true -> Color(0xFFFF4444)
-                    currentHandState != null -> Color(0xFFFFAA00)
+                    currentHandState?.handDetected == true -> Color(0xFFFFAA00)
                     else -> Color.Gray
                 }
                 Box(
@@ -292,6 +360,12 @@ fun CameraScreen(
                     fontSize = 11.sp
                 )
             }
+            Text(
+                text = "Çizgiler: ${savedStrokes.size}",
+                color = Color.White.copy(alpha = 0.6f),
+                fontSize = 10.sp,
+                modifier = Modifier.padding(top = 2.dp)
+            )
         }
     }
 }
