@@ -25,7 +25,9 @@ class SyncRepository(private val projectLink: String) {
     private var currentStrokePoints = mutableListOf<PointData>()
     private var isDrawing = false
     private var lastBroadcastTime = 0L
+    private var lastPointerBroadcastTime = 0L
     private val broadcastDebounceMs = 50L
+    private val pointerBroadcastDebounceMs = 8L
 
     val shareToken: String? = extractShareToken(projectLink)
     private val pageNum = 1
@@ -160,6 +162,32 @@ class SyncRepository(private val projectLink: String) {
 
     fun mirrorX(camX: Float): Float = 1f - camX
 
+    fun sendPointerPosition(x: Float, y: Float) {
+        if (shareToken == null) return
+        val now = System.currentTimeMillis()
+        if (now - lastPointerBroadcastTime < pointerBroadcastDebounceMs) return
+        lastPointerBroadcastTime = now
+        val docX = mirrorX(x)
+        val payload = mapOf(
+            "type" to "broadcast",
+            "event" to "pointer_position",
+            "payload" to mapOf("pageNum" to pageNum, "x" to docX, "y" to y)
+        )
+        val msg = """{"topic":"realtime:pdf_page_strokes:$shareToken","event":"broadcast","payload":${gson.toJson(payload)},"ref":"ptr"}"""
+        try { realtimeSocket?.send(msg) } catch (e: Exception) { Log.w(TAG, "Pointer broadcast hatası", e) }
+    }
+
+    fun sendPointerHidden() {
+        if (shareToken == null) return
+        val payload = mapOf(
+            "type" to "broadcast",
+            "event" to "pointer_hidden",
+            "payload" to mapOf("pageNum" to pageNum)
+        )
+        val msg = """{"topic":"realtime:pdf_page_strokes:$shareToken","event":"broadcast","payload":${gson.toJson(payload)},"ref":"ptr"}"""
+        try { realtimeSocket?.send(msg) } catch (e: Exception) { Log.w(TAG, "Pointer hidden hatası", e) }
+    }
+
     fun sendDrawEvent(camX: Float, camY: Float, isDrawing: Boolean) {
         if (shareToken == null) return
 
@@ -180,9 +208,15 @@ class SyncRepository(private val projectLink: String) {
                 this.isDrawing = false
                 if (currentStrokePoints.size >= 2) {
                     val simplified = simplifyPoints(currentStrokePoints, DP_EPSILON)
+                    val stroke = StrokeData(points = simplified, color = "#00ff9f", lineWidth = 4)
+                    synchronized(cachedStrokes) {
+                        cachedStrokes.add(stroke)
+                    }
+                    currentStrokePoints.clear()
                     saveStroke(simplified)
+                } else {
+                    currentStrokePoints.clear()
                 }
-                currentStrokePoints.clear()
             }
         }
     }

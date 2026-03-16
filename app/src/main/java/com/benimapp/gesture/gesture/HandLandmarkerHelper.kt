@@ -51,8 +51,8 @@ class HandLandmarkerHelper(
         private const val PINKY_PIP = 18
         private const val PINKY_TIP = 20
 
-        private const val CURSOR_SMOOTH = 0.45f
-        private const val ERASE_SMOOTH = 0.5f
+        private const val CURSOR_SMOOTH = 0.5f
+        private const val ERASE_SMOOTH = 0.52f
         private const val MIN_STROKE_DIST = 0.002f
         private const val GESTURE_LOCK_FRAMES = 3
         private const val PINCH_RELEASE_FRAMES = 4
@@ -116,8 +116,9 @@ class HandLandmarkerHelper(
             (lm[WRIST].y() - lm[MIDDLE_MCP].y()).toDouble()
         ).toFloat()
 
-        val pinchStartThreshold = (handSize * 0.28f).coerceIn(0.025f, 0.1f)
-        val pinchReleaseThreshold = (handSize * 0.4f).coerceIn(0.04f, 0.14f)
+        // Sadece işaret ve başparmak dokunduğunda yaz - yakın/uzak aynı kural
+        val pinchStartThreshold = (handSize * 0.12f).coerceIn(0.012f, 0.038f)
+        val pinchReleaseThreshold = (handSize * 0.20f).coerceIn(0.02f, 0.06f)
 
         val thumbTip = lm[THUMB_TIP]
         val indexTip = lm[INDEX_TIP]

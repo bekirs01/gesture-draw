@@ -114,7 +114,6 @@ fun CameraScreen(
     val syncRepository = remember(projectLink) { SyncRepository(projectLink) }
     var handHelper by remember { mutableStateOf<HandLandmarkerHelper?>(null) }
     var currentHandState by remember { mutableStateOf<HandState?>(null) }
-    var statusText by remember { mutableStateOf("El bekleniyor...") }
     val currentDrawingPoints = remember { mutableStateListOf<PointData>() }
     var savedStrokes by remember { mutableStateOf<List<StrokeData>>(emptyList()) }
 
@@ -154,35 +153,36 @@ fun CameraScreen(
                         resultListener = { state ->
                             currentHandState = state
                             if (state == null) {
-                                statusText = "El algılanmıyor"
+                                syncRepository.sendPointerHidden()
                                 if (currentDrawingPoints.isNotEmpty()) {
                                     syncRepository.sendDrawEvent(0f, 0f, isDrawing = false)
                                     currentDrawingPoints.clear()
                                 }
                             } else if (state.isErasing) {
-                                statusText = "Silgi modu (işaret+orta)"
+                                syncRepository.sendPointerHidden()
                                 syncRepository.sendEraseAtPosition(state.eraserX, state.eraserY)
                                 if (currentDrawingPoints.isNotEmpty()) {
                                     currentDrawingPoints.clear()
                                 }
                                 savedStrokes = syncRepository.getCachedStrokes()
                             } else if (state.isPinching) {
-                                statusText = "Çizim (başparmak+işaret)"
+                                syncRepository.sendPointerHidden()
                                 syncRepository.sendDrawEvent(state.cursorX, state.cursorY, isDrawing = true)
                                 val docX = syncRepository.mirrorX(state.cursorX)
                                 currentDrawingPoints.add(PointData(docX, state.cursorY))
-                            } else {
-                                statusText = "Başparmak+İşaret = Çiz | İşaret+Orta = Sil"
+                            } else if (state.handDetected) {
+                                syncRepository.sendPointerPosition(state.cursorX, state.cursorY)
                                 if (currentDrawingPoints.isNotEmpty()) {
                                     syncRepository.sendDrawEvent(state.cursorX, state.cursorY, isDrawing = false)
                                     currentDrawingPoints.clear()
                                     savedStrokes = syncRepository.getCachedStrokes()
                                 }
+                            } else {
+                                syncRepository.sendPointerHidden()
                             }
                         },
                         errorListener = { e ->
                             Log.e("CameraScreen", "HandLandmarker hatası", e)
-                            statusText = "Hata: ${e.message}"
                         }
                     )
                     handHelper = helper
@@ -303,10 +303,20 @@ fun CameraScreen(
                         )
                     } else if (state.handDetected) {
                         drawCircle(
-                            color = Color(0x88FFFFFF),
-                            radius = 10f,
+                            color = Color(0x66FF4444),
+                            radius = 16f,
+                            center = Offset(cx, cy)
+                        )
+                        drawCircle(
+                            color = Color(0xFFFF4444),
+                            radius = 8f,
+                            center = Offset(cx, cy)
+                        )
+                        drawCircle(
+                            color = Color.White,
+                            radius = 8f,
                             center = Offset(cx, cy),
-                            style = Stroke(width = 2f)
+                            style = Stroke(width = 1.5f)
                         )
                     }
                 }
@@ -352,12 +362,6 @@ fun CameraScreen(
                         .size(8.dp)
                         .clip(CircleShape)
                         .background(dotColor)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = statusText,
-                    color = Color.White,
-                    fontSize = 11.sp
                 )
             }
             Text(

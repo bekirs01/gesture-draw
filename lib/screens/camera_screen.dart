@@ -6,7 +6,6 @@ import 'package:apple_vision_commons/apple_vision_commons.dart';
 import 'package:apple_vision_hand/apple_vision_hand.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:hand_landmarker/hand_landmarker.dart' as hl;
 import '../widgets/skeleton_overlay.dart';
@@ -33,12 +32,8 @@ class _CameraScreenState extends State<CameraScreen> {
 
   late SyncService _sync;
 
-  int _fps = 0;
-  int _fpsFrameCount = 0;
-  int _fpsLastTime = 0;
-
-  static const _cursorSmooth = 0.0;
-  static const _eraseSmooth = 0.0;
+  static const _cursorSmooth = 0.42;
+  static const _eraseSmooth = 0.4;
   double _smoothCursorX = 0.5;
   double _smoothCursorY = 0.5;
   double _smoothEraserX = 0.5;
@@ -70,12 +65,34 @@ class _CameraScreenState extends State<CameraScreen> {
   Size _lastImageSize = const Size(640, 480);
   List<Offset>? _handSkeletonPoints;
 
+  /// PDF (A4) oranı - telefon çizim alanı PDF ile eşleşir, kenarlara erişim sağlanır
+  static const _pdfAspect = 210 / 297;
+
+  (double, double) _camToPdf(double camX, double camY) {
+    final imgW = _lastImageSize.width;
+    final imgH = _lastImageSize.height;
+    if (imgW <= 0 || imgH <= 0) return (camX, camY);
+    final camAr = imgW / imgH;
+    if (camAr > _pdfAspect) {
+      final cropW = _pdfAspect / camAr;
+      final cropLeft = (1 - cropW) / 2;
+      final pdfX = ((camX - cropLeft) / cropW).clamp(0.0, 1.0);
+      final pdfY = camY.clamp(0.0, 1.0);
+      return (pdfX, pdfY);
+    } else {
+      final cropH = camAr / _pdfAspect;
+      final cropTop = (1 - cropH) / 2;
+      final pdfX = camX.clamp(0.0, 1.0);
+      final pdfY = ((camY - cropTop) / cropH).clamp(0.0, 1.0);
+      return (pdfX, pdfY);
+    }
+  }
+
   @override
   void initState() {
     super.initState();
     SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
     _sync = SyncService(widget.projectLink);
-    _fpsLastTime = DateTime.now().millisecondsSinceEpoch;
     _init();
   }
 
@@ -178,19 +195,6 @@ class _CameraScreenState extends State<CameraScreen> {
     if (!mounted) return;
     _lastImageSize = Size(image.width.toDouble(), image.height.toDouble());
 
-    _fpsFrameCount++;
-    final now = DateTime.now().millisecondsSinceEpoch;
-    if (now - _fpsLastTime >= 1000) {
-      _fps = _fpsFrameCount;
-      _fpsFrameCount = 0;
-      _fpsLastTime = now;
-      if (mounted) {
-        SchedulerBinding.instance.addPostFrameCallback((_) {
-          if (mounted) setState(() {});
-        });
-      }
-    }
-
     if (!_isDetecting) {
       if (Platform.isAndroid && _handPlugin != null) {
         _processAndroidImage(image);
@@ -243,8 +247,9 @@ class _CameraScreenState extends State<CameraScreen> {
           final handSize = math.sqrt(
               math.pow(lm[0].x - lm[9].x, 2) + math.pow(lm[0].y - lm[9].y, 2));
 
-          final pinchStartThreshold = (handSize * 0.28).clamp(0.025, 0.1);
-          final pinchReleaseThreshold = (handSize * 0.4).clamp(0.04, 0.14);
+          // Sadece işaret ve başparmak dokunduğunda yaz - yakın/uzak aynı kural
+          final pinchStartThreshold = (handSize * 0.12).clamp(0.012, 0.038);
+          final pinchReleaseThreshold = (handSize * 0.20).clamp(0.02, 0.06);
 
           final pinchDist = math.sqrt(
               math.pow(lm[4].x - lm[8].x, 2) + math.pow(lm[4].y - lm[8].y, 2));
@@ -421,8 +426,9 @@ class _CameraScreenState extends State<CameraScreen> {
             math.pow(wrist.location.x - middleMCP.location.x, 2) +
                 math.pow(wrist.location.y - middleMCP.location.y, 2)) / maxDim;
       }
-      final pinchStartT = (handSize * 0.28).clamp(0.025, 0.1);
-      final pinchReleaseT = (handSize * 0.4).clamp(0.04, 0.14);
+      // Sadece işaret ve başparmak dokunduğunda yaz - yakın/uzak aynı kural
+      final pinchStartT = (handSize * 0.12).clamp(0.012, 0.038);
+      final pinchReleaseT = (handSize * 0.20).clamp(0.02, 0.06);
 
       double pinchDist = 1.0;
       if (thumbTip != null) {
@@ -528,17 +534,19 @@ class _CameraScreenState extends State<CameraScreen> {
         _handSkeletonPoints = null;
         _wasPinching = false; _wasErasing = false;
         _pinchReleaseCounter = 0; _twoFingerHeldFrames = 0;
-        _statusText = 'El algılanmıyor';
         _sync.sendPointerHidden();
       });
       return;
     }
 
+    final (pdfCx, pdfCy) = _camToPdf(state.cursorX, state.cursorY);
+    final (pdfEx, pdfEy) = _camToPdf(state.eraserX, state.eraserY);
+
     setState(() {
-      _cursorX = state.cursorX;
-      _cursorY = state.cursorY;
-      _eraserX = state.eraserX;
-      _eraserY = state.eraserY;
+      _cursorX = pdfCx;
+      _cursorY = pdfCy;
+      _eraserX = pdfEx;
+      _eraserY = pdfEy;
       _isPinching = state.isPinching;
       _isErasing = state.isErasing;
       _isPointering = state.isPointering;
@@ -551,19 +559,17 @@ class _CameraScreenState extends State<CameraScreen> {
           _sync.sendDrawEvent(0, 0, isDrawing: false);
           _currentStrokePoints = [];
         }
-        _sync.sendEraseAtPosition(state.eraserX, state.eraserY);
-        _statusText = 'Silgi modu (işaret+orta)';
+        _sync.sendEraseAtPosition(pdfEx, pdfEy);
       } else if (state.isPinching) {
         _pointerX = null;
         _pointerY = null;
         _sync.sendPointerHidden();
-        _sync.sendDrawEvent(state.cursorX, state.cursorY, isDrawing: true);
-        _currentStrokePoints.add({'x': state.cursorX, 'y': state.cursorY});
-        _statusText = 'Çizim (başparmak+işaret)';
+        _sync.sendDrawEvent(pdfCx, pdfCy, isDrawing: true);
+        _currentStrokePoints.add({'x': pdfCx, 'y': pdfCy});
       } else if (state.isPointering) {
-        _pointerX = state.cursorX;
-        _pointerY = state.cursorY;
-        _sync.sendPointerPosition(state.cursorX, state.cursorY);
+        _pointerX = pdfCx;
+        _pointerY = pdfCy;
+        _sync.sendPointerPosition(pdfCx, pdfCy);
         final pts = _currentStrokePoints;
         if (pts.length >= 2) {
           final dist = math.sqrt(math.pow(pts.last['x']! - pts.first['x']!, 2) +
@@ -571,13 +577,12 @@ class _CameraScreenState extends State<CameraScreen> {
           if (dist < 0.02) {
             _sync.sendTapAtPosition(pts.first['x']!, pts.first['y']!);
           } else {
-            _sync.sendDrawEvent(state.cursorX, state.cursorY, isDrawing: false);
+            _sync.sendDrawEvent(pdfCx, pdfCy, isDrawing: false);
           }
         } else if (pts.length == 1) {
           _sync.sendTapAtPosition(pts.first['x']!, pts.first['y']!);
         }
         _currentStrokePoints = [];
-        _statusText = 'İşaret (sunumda konum)';
       } else {
         _pointerX = null;
         _pointerY = null;
@@ -591,10 +596,9 @@ class _CameraScreenState extends State<CameraScreen> {
         if (isTap && pts.isNotEmpty) {
           _sync.sendTapAtPosition(pts.first['x']!, pts.first['y']!);
         } else if (pts.length >= 2) {
-          _sync.sendDrawEvent(state.cursorX, state.cursorY, isDrawing: false);
+          _sync.sendDrawEvent(pdfCx, pdfCy, isDrawing: false);
         }
         _currentStrokePoints = [];
-        _statusText = 'İşaret=Konum | Pinch=Çiz/Tıkla | 2 parmak=Sil';
       }
     });
   }
@@ -627,15 +631,40 @@ class _CameraScreenState extends State<CameraScreen> {
     if (!ctrl.value.isInitialized) {
       return const Center(child: CircularProgressIndicator(color: Color(0xFF00FF9F)));
     }
-    return SizedBox.expand(
-      child: FittedBox(
-        fit: BoxFit.cover,
-        child: SizedBox(
-          width: ctrl.value.previewSize!.height,
-          height: ctrl.value.previewSize!.width,
-          child: CameraPreview(ctrl),
-        ),
-      ),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final screenW = constraints.maxWidth;
+        final screenH = constraints.maxHeight;
+        double w, h;
+        if (screenW / screenH > _pdfAspect) {
+          h = screenH;
+          w = h * _pdfAspect;
+        } else {
+          w = screenW;
+          h = w / _pdfAspect;
+        }
+        final left = (screenW - w) / 2;
+        final top = (screenH - h) / 2;
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            Positioned.fill(child: Container(color: Colors.black)),
+            Positioned(
+              left: left, top: top, width: w, height: h,
+              child: ClipRect(
+                child: FittedBox(
+                  fit: BoxFit.cover,
+                  child: SizedBox(
+                    width: ctrl.value.previewSize!.height,
+                    height: ctrl.value.previewSize!.width,
+                    child: CameraPreview(ctrl),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 
@@ -694,6 +723,19 @@ class _CameraScreenState extends State<CameraScreen> {
 
     final screenW = MediaQuery.of(context).size.width;
     final screenH = MediaQuery.of(context).size.height;
+    double drawW, drawH, drawLeft, drawTop;
+    if (screenW / screenH > _pdfAspect) {
+      drawH = screenH;
+      drawW = drawH * _pdfAspect;
+      drawLeft = (screenW - drawW) / 2;
+      drawTop = 0;
+    } else {
+      drawW = screenW;
+      drawH = drawW / _pdfAspect;
+      drawLeft = 0;
+      drawTop = (screenH - drawH) / 2;
+    }
+    final contentRect = Rect.fromLTWH(drawLeft, drawTop, drawW, drawH);
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -703,31 +745,35 @@ class _CameraScreenState extends State<CameraScreen> {
           _buildCameraPreview(),
 
           if (_handSkeletonPoints != null && _handSkeletonPoints!.length >= 15)
-            Positioned.fill(
+            Positioned(
+              left: drawLeft, top: drawTop, width: drawW, height: drawH,
               child: SkeletonOverlay(
                 handPoints: _handSkeletonPoints,
                 imageSize: _lastImageSize,
-                screenSize: MediaQuery.of(context).size,
+                screenSize: Size(drawW, drawH),
                 isPinching: _isPinching,
                 isErasing: _isErasing,
               ),
             ),
 
-          CustomPaint(
-            size: Size(screenW, screenH),
-            painter: _StrokeOverlayPainter(
-              savedStrokes: _sync.cachedStrokes,
-              currentPoints: _currentStrokePoints,
-              currentColor: _sync.drawColor,
+          RepaintBoundary(
+            child: CustomPaint(
+              size: Size(screenW, screenH),
+              painter: _StrokeOverlayPainter(
+                savedStrokes: _sync.cachedStrokes,
+                currentPoints: _currentStrokePoints,
+                currentColor: _sync.drawColor,
+                contentRect: contentRect,
+              ),
             ),
           ),
 
           if (_isErasing && _eraserX != null && _eraserY != null)
             Positioned(
-              left: _eraserX! * screenW - 0.09 * screenW,
-              top: _eraserY! * screenH - 0.09 * screenW,
+              left: drawLeft + _eraserX! * drawW - 0.09 * drawW,
+              top: drawTop + _eraserY! * drawH - 0.09 * drawW,
               child: Container(
-                width: 0.18 * screenW, height: 0.18 * screenW,
+                width: 0.18 * drawW, height: 0.18 * drawW,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
                   color: Colors.red.withValues(alpha: 0.15),
@@ -738,27 +784,19 @@ class _CameraScreenState extends State<CameraScreen> {
 
           if (_isPointering && _pointerX != null && _pointerY != null)
             Positioned(
-              left: _pointerX! * screenW - 16,
-              top: _pointerY! * screenH - 16,
+              left: drawLeft + _pointerX! * drawW - 14,
+              top: drawTop + _pointerY! * drawH - 14,
               child: IgnorePointer(
-                child: Container(
-                  width: 32,
-                  height: 32,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: Colors.red.withValues(alpha: 0.4),
-                    border: Border.all(color: Colors.red, width: 3),
-                    boxShadow: [
-                      BoxShadow(color: Colors.red.withValues(alpha: 0.6), blurRadius: 12, spreadRadius: 2),
-                    ],
-                  ),
+                child: CustomPaint(
+                  size: const Size(28, 28),
+                  painter: _PointerIconPainter(),
                 ),
               ),
             )
           else if (!_isErasing && _cursorX != null && _cursorY != null)
             Positioned(
-              left: _cursorX! * screenW - (_isPinching ? 14 : 10),
-              top: _cursorY! * screenH - (_isPinching ? 14 : 10),
+              left: drawLeft + _cursorX! * drawW - (_isPinching ? 14 : 10),
+              top: drawTop + _cursorY! * drawH - (_isPinching ? 14 : 10),
               child: Container(
                 width: _isPinching ? 28 : 20,
                 height: _isPinching ? 28 : 20,
@@ -794,12 +832,9 @@ class _CameraScreenState extends State<CameraScreen> {
                         color: _isPinching ? const Color(0xFF00FF9F) : _isErasing ? Colors.red : (_cursorX != null ? Colors.orange : Colors.grey),
                       ),
                     ),
-                    const SizedBox(width: 8),
-                    Expanded(child: Text(_statusText, style: const TextStyle(color: Colors.white, fontSize: 13), overflow: TextOverflow.ellipsis)),
-                    Text('${_sync.cachedStrokes.length}', style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 11)),
-                    const SizedBox(width: 8),
-                    Text('$_fps FPS', style: const TextStyle(color: Color(0xFF00FF9F), fontSize: 12, fontWeight: FontWeight.w600)),
-                    const SizedBox(width: 8),
+                    const SizedBox(width: 12),
+                    Text('${_sync.cachedStrokes.length}', style: TextStyle(color: Colors.white.withValues(alpha: 0.6), fontSize: 12)),
+                    const Spacer(),
                     IconButton(
                       onPressed: () async {
                         await _sync.clearAllStrokes();
@@ -834,7 +869,18 @@ class _StrokeOverlayPainter extends CustomPainter {
   final List<StrokeData> savedStrokes;
   final List<Map<String, double>> currentPoints;
   final String currentColor;
-  _StrokeOverlayPainter({required this.savedStrokes, required this.currentPoints, this.currentColor = '#00ff9f'});
+  final Rect contentRect;
+  _StrokeOverlayPainter({
+    required this.savedStrokes,
+    required this.currentPoints,
+    this.currentColor = '#00ff9f',
+    required this.contentRect,
+  });
+
+  Offset _toRect(double x, double y) => Offset(
+    contentRect.left + x * contentRect.width,
+    contentRect.top + y * contentRect.height,
+  );
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -846,8 +892,9 @@ class _StrokeOverlayPainter extends CustomPainter {
         ..strokeCap = StrokeCap.round ..style = PaintingStyle.stroke;
       for (int i = 1; i < stroke.points.length; i++) {
         canvas.drawLine(
-          Offset(stroke.points[i - 1]['x']! * size.width, stroke.points[i - 1]['y']! * size.height),
-          Offset(stroke.points[i]['x']! * size.width, stroke.points[i]['y']! * size.height), paint);
+          _toRect(stroke.points[i - 1]['x']!, stroke.points[i - 1]['y']!),
+          _toRect(stroke.points[i]['x']!, stroke.points[i]['y']!),
+          paint);
       }
     }
     if (currentPoints.length >= 2) {
@@ -858,8 +905,9 @@ class _StrokeOverlayPainter extends CustomPainter {
         ..style = PaintingStyle.stroke;
       for (int i = 1; i < currentPoints.length; i++) {
         canvas.drawLine(
-          Offset(currentPoints[i - 1]['x']! * size.width, currentPoints[i - 1]['y']! * size.height),
-          Offset(currentPoints[i]['x']! * size.width, currentPoints[i]['y']! * size.height), paint);
+          _toRect(currentPoints[i - 1]['x']!, currentPoints[i - 1]['y']!),
+          _toRect(currentPoints[i]['x']!, currentPoints[i]['y']!),
+          paint);
       }
     }
   }
@@ -871,5 +919,27 @@ class _StrokeOverlayPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _StrokeOverlayPainter old) =>
-      savedStrokes != old.savedStrokes || currentPoints != old.currentPoints || currentColor != old.currentColor;
+      savedStrokes != old.savedStrokes ||
+      currentPoints != old.currentPoints ||
+      currentColor != old.currentColor ||
+      contentRect != old.contentRect;
+}
+
+class _PointerIconPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    const color = Color(0xFFFF4444);
+    final center = Offset(size.width / 2, size.height / 2);
+    canvas.drawCircle(center, 10, Paint()
+      ..color = color.withValues(alpha: 0.4)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6));
+    canvas.drawCircle(center, 6, Paint()..color = color);
+    canvas.drawCircle(center, 6, Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter old) => false;
 }

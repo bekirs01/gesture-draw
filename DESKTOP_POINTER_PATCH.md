@@ -1,26 +1,26 @@
 # desktop-cizim: Lazer İşaretçi (Pointer) Desteği
 
-Mobil uygulama tek işaret parmağı ile işaret ettiğinde, sunum ekranında lazer noktası gösterilir.
+Mobil uygulama **tek işaret parmağını kaldırdığında** telefon ekranında ve sunum ekranında lazer işaretçi görünür. Parmak takip edilir, sunumda nerede olduğunuzu görebilirsiniz.
 
-## subscribeStrokes callback'ine ekle
+## 1. subscribeStrokes callback'ine ekle
 
-`subscribeStrokes(shareId, (payload) => { ... })` içinde, mevcut `if (payload?.type === "progress")` bloklarından önce veya sonra:
+`subscribeStrokes(shareId, (payload) => { ... })` içinde, mevcut bloklardan önce veya sonra:
 
 ```javascript
-// Lazer işaretçi - mobil tek parmakla işaret ettiğinde
+// Lazer işaretçi - mobil tek parmakla işaret ettiğinde (işaret parmağı yukarı)
 if (payload?.event === "pointer_position") {
   const { x, y } = payload.payload || {};
   if (typeof x === "number" && typeof y === "number") {
     pointerPosition = { x, y };
-    drawPointer();
+    requestAnimationFrame(drawPointer);
   }
 } else if (payload?.event === "pointer_hidden") {
   pointerPosition = null;
-  drawPointer();
+  requestAnimationFrame(drawPointer);
 }
 ```
 
-## pointerPosition ve drawPointer
+## 2. pointerPosition ve drawPointer
 
 ```javascript
 let pointerPosition = null;
@@ -31,25 +31,29 @@ function drawPointer() {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
 
-  // Önceki pointer'ı temizle (veya double-buffer kullan)
-  // Basit yöntem: her frame'de tüm çizimleri yeniden çiz + pointer
   if (pointerPosition) {
     const x = pointerPosition.x * canvas.width;
     const y = pointerPosition.y * canvas.height;
     ctx.save();
+    // Glow
     ctx.beginPath();
-    ctx.arc(x, y, 8, 0, Math.PI * 2);
-    ctx.fillStyle = "rgba(255, 0, 0, 0.6)";
+    ctx.arc(x, y, 14, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(255, 68, 68, 0.35)";
     ctx.fill();
-    ctx.strokeStyle = "red";
-    ctx.lineWidth = 3;
+    // Lazer noktası
+    ctx.beginPath();
+    ctx.arc(x, y, 6, 0, Math.PI * 2);
+    ctx.fillStyle = "#FF4444";
+    ctx.fill();
+    ctx.strokeStyle = "white";
+    ctx.lineWidth = 1.5;
     ctx.stroke();
     ctx.restore();
   }
 }
 ```
 
-`drawStrokesToCanvas` çağrıldıktan sonra `drawPointer()` çağrın. Veya requestAnimationFrame ile sürekli çizim döngüsünde pointer'ı çizin.
+**Önemli:** `drawStrokesToCanvas` her çağrıldığında sonrasında `drawPointer()` çağrın. Böylece çizimler + pointer birlikte görünür.
 
 ## Tıklama (Tap) - Web arayüzünü kontrol
 
@@ -78,9 +82,22 @@ if (payload?.event === "tap_at") {
 
 Böylece kullanıcı telefondan renk seçiciye, araçlara, butonlara parmağıyla tıklayabilir.
 
+## drawStrokesToCanvas entegrasyonu
+
+Pointer'ın her zaman görünmesi için, `drawStrokesToCanvas` fonksiyonunun **sonuna** şunu ekleyin:
+
+```javascript
+function drawStrokesToCanvas(w, h) {
+  // ... mevcut stroke çizim kodu ...
+  drawPointer();  // Pointer'ı en üstte göster
+}
+```
+
 ## Realtime mesaj formatı
 
 Mobil uygulama şu event'leri broadcast eder:
-- `pointer_position`: `{ pageNum, x, y }` - normalize [0,1], lazer konumu
+- `pointer_position`: `{ pageNum, x, y }` - normalize [0,1], lazer konumu (işaret parmağı yukarı)
 - `pointer_hidden`: `{ pageNum }` - işaretçiyi gizle
 - `tap_at`: `{ pageNum, x, y }` - normalize [0,1], tıklama konumu (pinch ile)
+
+**Payload yapısı:** `payload.event` ve `payload.payload` (x, y, pageNum)

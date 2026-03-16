@@ -253,9 +253,13 @@ class SyncService {
       _isDrawing = false;
       if (_currentStrokePoints.length >= 2) {
         final simplified = simplifyPoints(_currentStrokePoints, _dpEpsilon);
+        final stroke = StrokeData(points: simplified, color: _drawColor);
+        _cachedStrokes = [..._cachedStrokes, stroke];
+        _currentStrokePoints = [];
         _saveStroke(simplified);
+      } else {
+        _currentStrokePoints = [];
       }
-      _currentStrokePoints = [];
     }
   }
 
