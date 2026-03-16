@@ -61,10 +61,10 @@ class SyncService {
   int _lastEraseApplyTime = 0;
   int _lastErasePersistTime = 0;
   static const _broadcastDebounceMs = 50;
-  static const _eraseApplyDebounceMs = 40;
-  static const _erasePersistDebounceMs = 140;
+  static const _eraseApplyDebounceMs = 22;
+  static const _erasePersistDebounceMs = 80;
 
-  static const _eraseRadius = 0.09;
+  static const _eraseRadius = 0.12;
   static const _eraseRadiusSq = _eraseRadius * _eraseRadius;
   static const _minStrokeDist = 0.002;
   static const _dpEpsilon = 0.002;
@@ -298,6 +298,7 @@ class SyncService {
 
     final modified = _eraseLayerAtPosition(_cachedStrokes, docX, docY);
     _cachedStrokes = modified;
+    _broadcastStrokeComplete(modified);
     _scheduleErasePersist();
   }
 

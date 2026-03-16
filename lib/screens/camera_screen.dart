@@ -33,7 +33,7 @@ class _CameraScreenState extends State<CameraScreen> {
   late SyncService _sync;
 
   static const _cursorSmooth = 0.42;
-  static const _eraseSmooth = 0.4;
+  static const _eraseSmooth = 0.28;
   double _smoothCursorX = 0.5;
   double _smoothCursorY = 0.5;
   double _smoothEraserX = 0.5;
@@ -269,7 +269,7 @@ class _CameraScreenState extends State<CameraScreen> {
           }
 
           final eraseActive =
-              _twoFingerHeldFrames >= 2 && _framesSinceDraw >= _gestureLockFrames;
+              _twoFingerHeldFrames >= 1 && _framesSinceDraw >= _gestureLockFrames;
 
           final rawPinch = pinchDist <
               (_wasPinching ? pinchReleaseThreshold : pinchStartThreshold);
@@ -444,8 +444,8 @@ class _CameraScreenState extends State<CameraScreen> {
         final eraseDist = math.sqrt(
             math.pow(indexTip.location.x - middleTip.location.x, 2) +
                 math.pow(indexTip.location.y - middleTip.location.y, 2)) / maxDim;
-        if (eraseDist < 0.08) { _twoFingerHeldFrames++; } else { _twoFingerHeldFrames = 0; }
-        eraseActive = _twoFingerHeldFrames >= 2 && _framesSinceDraw >= _gestureLockFrames;
+        if (eraseDist < 0.11) { _twoFingerHeldFrames++; } else { _twoFingerHeldFrames = 0; }
+        eraseActive = _twoFingerHeldFrames >= 1 && _framesSinceDraw >= _gestureLockFrames;
       }
 
       bool pinchActive;
@@ -561,9 +561,9 @@ class _CameraScreenState extends State<CameraScreen> {
         }
         _sync.sendEraseAtPosition(pdfEx, pdfEy);
       } else if (state.isPinching) {
-        _pointerX = null;
-        _pointerY = null;
-        _sync.sendPointerHidden();
+        _pointerX = pdfCx;
+        _pointerY = pdfCy;
+        _sync.sendPointerPosition(pdfCx, pdfCy);
         _sync.sendDrawEvent(pdfCx, pdfCy, isDrawing: true);
         _currentStrokePoints.add({'x': pdfCx, 'y': pdfCy});
       } else if (state.isPointering) {
@@ -782,7 +782,7 @@ class _CameraScreenState extends State<CameraScreen> {
               ),
             ),
 
-          if (_isPointering && _pointerX != null && _pointerY != null)
+          if ((_isPointering || _isPinching) && _pointerX != null && _pointerY != null)
             Positioned(
               left: drawLeft + _pointerX! * drawW - 14,
               top: drawTop + _pointerY! * drawH - 14,
@@ -793,7 +793,7 @@ class _CameraScreenState extends State<CameraScreen> {
                 ),
               ),
             )
-          else if (!_isErasing && _cursorX != null && _cursorY != null)
+          else if (!_isErasing && !_isPinching && _cursorX != null && _cursorY != null)
             Positioned(
               left: drawLeft + _cursorX! * drawW - (_isPinching ? 14 : 10),
               top: drawTop + _cursorY! * drawH - (_isPinching ? 14 : 10),
