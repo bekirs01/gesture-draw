@@ -360,6 +360,17 @@ class SyncService {
     );
   }
 
+  Future<void> clearAllStrokes() async {
+    if (shareToken == null) return;
+    _cachedStrokes = [];
+    _currentStrokePoints = [];
+    _isDrawing = false;
+    try {
+      await _upsert([]);
+      _broadcastStrokeComplete([]);
+    } catch (_) {}
+  }
+
   void destroy() {
     _heartbeatTimer?.cancel();
     _realtimeSocket?.close();

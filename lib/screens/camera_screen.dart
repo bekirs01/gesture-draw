@@ -6,9 +6,8 @@ import 'package:apple_vision_commons/apple_vision_commons.dart';
 import 'package:apple_vision_hand/apple_vision_hand.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
-import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
-import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import 'package:hand_landmarker/hand_landmarker.dart' as hl;
 import '../widgets/skeleton_overlay.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -24,10 +23,6 @@ class CameraScreen extends StatefulWidget {
 }
 
 class _CameraScreenState extends State<CameraScreen> {
-  static const bool _enableFacePose = true;
-  static const int _faceProcessEveryNFrames = 6;
-  static const int _poseProcessEveryNFrames = 5;
-
   CameraController? _controller;
   List<CameraDescription> _cameras = [];
   int _cameraIndex = 0;
@@ -35,12 +30,15 @@ class _CameraScreenState extends State<CameraScreen> {
   String _statusText = 'Başlatılıyor...';
   bool _permissionDenied = false;
   bool _isDetecting = false;
-  int _frameCounter = 0;
 
   late SyncService _sync;
 
-  static const _cursorSmooth = 0.15;
-  static const _eraseSmooth = 0.25;
+  int _fps = 0;
+  int _fpsFrameCount = 0;
+  int _fpsLastTime = 0;
+
+  static const _cursorSmooth = 0.05;
+  static const _eraseSmooth = 0.1;
   double _smoothCursorX = 0.5;
   double _smoothCursorY = 0.5;
   double _smoothEraserX = 0.5;
@@ -66,14 +64,6 @@ class _CameraScreenState extends State<CameraScreen> {
   hl.HandLandmarkerPlugin? _handPlugin;
   AppleVisionHandController? _appleVisionController;
 
-  FaceDetector? _faceDetector;
-  bool _isFaceDetecting = false;
-  String _faceGesture = '';
-
-  PoseDetector? _poseDetector;
-  bool _isPoseDetecting = false;
-  Pose? _pose;
-  Size _poseImageSize = Size.zero;
   Size _lastImageSize = const Size(640, 480);
   List<Offset>? _handSkeletonPoints;
 
@@ -82,22 +72,7 @@ class _CameraScreenState extends State<CameraScreen> {
     super.initState();
     SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
     _sync = SyncService(widget.projectLink);
-    if (_enableFacePose) {
-      _faceDetector = FaceDetector(
-        options: FaceDetectorOptions(
-          enableClassification: true,
-          enableTracking: true,
-          enableLandmarks: true,
-          performanceMode: FaceDetectorMode.fast,
-        ),
-      );
-      _poseDetector = PoseDetector(
-        options: PoseDetectorOptions(
-          model: PoseDetectionModel.base,
-          mode: PoseDetectionMode.stream,
-        ),
-      );
-    }
+    _fpsLastTime = DateTime.now().millisecondsSinceEpoch;
     _init();
   }
 
@@ -199,7 +174,19 @@ class _CameraScreenState extends State<CameraScreen> {
   void _processCameraImage(CameraImage image) {
     if (!mounted) return;
     _lastImageSize = Size(image.width.toDouble(), image.height.toDouble());
-    _frameCounter++;
+
+    _fpsFrameCount++;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (now - _fpsLastTime >= 1000) {
+      _fps = _fpsFrameCount;
+      _fpsFrameCount = 0;
+      _fpsLastTime = now;
+      if (mounted) {
+        SchedulerBinding.instance.addPostFrameCallback((_) {
+          if (mounted) setState(() {});
+        });
+      }
+    }
 
     if (!_isDetecting) {
       if (Platform.isAndroid && _handPlugin != null) {
@@ -208,112 +195,6 @@ class _CameraScreenState extends State<CameraScreen> {
         _processIOSImage(image);
       }
     }
-
-    if (_enableFacePose &&
-        !_isFaceDetecting &&
-        _frameCounter % _faceProcessEveryNFrames == 0) {
-      _detectFace(image);
-    }
-
-    if (_enableFacePose &&
-        !_isPoseDetecting &&
-        _frameCounter % _poseProcessEveryNFrames == 0) {
-      _detectPose(image);
-    }
-  }
-
-  InputImage? _buildInputImage(CameraImage image) {
-    final camera = _cameras[_cameraIndex];
-    final sensorOrientation = camera.sensorOrientation;
-    InputImageRotation? rotation = InputImageRotationValue.fromRawValue(sensorOrientation);
-    rotation ??= InputImageRotation.rotation0deg;
-
-    final format = InputImageFormatValue.fromRawValue(image.format.raw);
-    if (format == null) return null;
-    if (image.planes.isEmpty) return null;
-    final plane = image.planes.first;
-    return InputImage.fromBytes(
-      bytes: plane.bytes,
-      metadata: InputImageMetadata(
-        size: Size(image.width.toDouble(), image.height.toDouble()),
-        rotation: rotation,
-        format: format,
-        bytesPerRow: plane.bytesPerRow,
-      ),
-    );
-  }
-
-  Future<void> _detectFace(CameraImage image) async {
-    if (_faceDetector == null) return;
-    _isFaceDetecting = true;
-    try {
-      final inputImage = _buildInputImage(image);
-      if (inputImage == null) {
-        _isFaceDetecting = false;
-        return;
-      }
-      final faces = await _faceDetector!.processImage(inputImage);
-      if (!mounted) return;
-      if (faces.isEmpty) {
-        setState(() => _faceGesture = '');
-      } else {
-        final face = faces.first;
-        final leftEye = (face.leftEyeOpenProbability ?? 1.0) > 0.3;
-        final rightEye = (face.rightEyeOpenProbability ?? 1.0) > 0.3;
-        final smiling = (face.smilingProbability ?? 0.0) > 0.5;
-        final headY = face.headEulerAngleY;
-
-        String gesture = '';
-        if (!leftEye && !rightEye) {
-          gesture = 'Gözler kapalı';
-        } else if (!leftEye && rightEye) {
-          gesture = 'Sol göz kırptı';
-        } else if (leftEye && !rightEye) {
-          gesture = 'Sağ göz kırptı';
-        }
-        if (smiling) {
-          gesture = gesture.isEmpty ? 'Gülümsüyor' : '$gesture + Gülümsüyor';
-        }
-        if (headY != null) {
-          if (headY > 20) {
-            gesture = gesture.isEmpty ? 'Sola bakıyor' : '$gesture | Sola';
-          } else if (headY < -20) {
-            gesture = gesture.isEmpty ? 'Sağa bakıyor' : '$gesture | Sağa';
-          }
-        }
-        if (gesture.isEmpty) gesture = 'Yüz algılandı';
-        setState(() => _faceGesture = gesture);
-      }
-    } catch (_) {}
-    _isFaceDetecting = false;
-  }
-
-  Future<void> _detectPose(CameraImage image) async {
-    if (_poseDetector == null) return;
-    _isPoseDetecting = true;
-    try {
-      final inputImage = _buildInputImage(image);
-      if (inputImage == null) {
-        _isPoseDetecting = false;
-        return;
-      }
-      final poses = await _poseDetector!.processImage(inputImage);
-      if (!mounted) return;
-      if (poses.isEmpty) {
-        setState(() {
-          _pose = null;
-          _poseImageSize = Size.zero;
-        });
-      } else {
-        setState(() {
-          _pose = poses.first;
-          _poseImageSize = Size(image.width.toDouble(), image.height.toDouble());
-        });
-      }
-    } catch (_) {
-      if (mounted) setState(() => _pose = null);
-    }
-    _isPoseDetecting = false;
   }
 
   bool _isFingerExtended(List<dynamic> landmarks, int mcp, int pip, int tip) {
@@ -675,8 +556,6 @@ class _CameraScreenState extends State<CameraScreen> {
     _controller?.stopImageStream();
     _controller?.dispose();
     _handPlugin?.dispose();
-    _faceDetector?.close();
-    _poseDetector?.close();
     _sync.destroy();
     SystemChrome.setPreferredOrientations([
       DeviceOrientation.portraitUp,
@@ -767,12 +646,11 @@ class _CameraScreenState extends State<CameraScreen> {
         children: [
           _buildCameraPreview(),
 
-          if (_pose != null || (_handSkeletonPoints != null && _handSkeletonPoints!.length >= 15))
+          if (_handSkeletonPoints != null && _handSkeletonPoints!.length >= 15)
             Positioned.fill(
               child: SkeletonOverlay(
-                pose: _pose,
                 handPoints: _handSkeletonPoints,
-                imageSize: _poseImageSize.width > 0 ? _poseImageSize : _lastImageSize,
+                imageSize: _lastImageSize,
                 screenSize: MediaQuery.of(context).size,
                 isPinching: _isPinching,
                 isErasing: _isErasing,
@@ -843,9 +721,15 @@ class _CameraScreenState extends State<CameraScreen> {
                     Expanded(child: Text(_statusText, style: const TextStyle(color: Colors.white, fontSize: 13), overflow: TextOverflow.ellipsis)),
                     Text('${_sync.cachedStrokes.length}', style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 11)),
                     const SizedBox(width: 8),
+                    Text('$_fps FPS', style: const TextStyle(color: Color(0xFF00FF9F), fontSize: 12, fontWeight: FontWeight.w600)),
+                    const SizedBox(width: 8),
                     IconButton(
-                      onPressed: _canSwitchCamera() ? _switchCamera : null,
-                      icon: const Icon(Icons.cameraswitch, color: Colors.white, size: 24),
+                      onPressed: () async {
+                        await _sync.clearAllStrokes();
+                        if (mounted) setState(() {});
+                      },
+                      icon: const Icon(Icons.delete_sweep, color: Colors.white, size: 22),
+                      tooltip: 'Tümünü sil',
                     ),
                   ],
                 ),
@@ -853,54 +737,11 @@ class _CameraScreenState extends State<CameraScreen> {
             ),
           ),
 
-          if (_enableFacePose && _faceGesture.isNotEmpty)
-            Positioned(
-              bottom: 0, left: 0, right: 0,
-              child: SafeArea(
-                child: Container(
-                  margin: const EdgeInsets.all(16),
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                  decoration: BoxDecoration(color: Colors.black87, borderRadius: BorderRadius.circular(12)),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Icon(Icons.face, color: Colors.yellow, size: 18),
-                      const SizedBox(width: 8),
-                      Flexible(child: Text(_faceGesture, style: const TextStyle(color: Colors.white, fontSize: 14), textAlign: TextAlign.center)),
-                    ],
-                  ),
-                ),
-              ),
-            ),
         ],
       ),
     );
   }
 
-  bool _canSwitchCamera() {
-    if (_cameras.isEmpty) return false;
-    return _cameras.any((c) => c.lensDirection == CameraLensDirection.front) &&
-           _cameras.any((c) => c.lensDirection == CameraLensDirection.back);
-  }
-
-  Future<void> _switchCamera() async {
-    if (!_isInitialized || _cameras.isEmpty) return;
-    final isFront = _cameras[_cameraIndex].lensDirection == CameraLensDirection.front;
-    final nextIndex = isFront
-        ? _cameras.indexWhere((c) => c.lensDirection == CameraLensDirection.back)
-        : _cameras.indexWhere((c) => c.lensDirection == CameraLensDirection.front);
-    if (nextIndex < 0) return;
-    await _controller?.stopImageStream();
-    await _controller?.dispose();
-    _cameraIndex = nextIndex;
-    await _initCamera();
-    if (mounted) setState(() {});
-    final hasHandTracking = (Platform.isAndroid && _handPlugin != null) ||
-        (Platform.isIOS && _appleVisionController != null);
-    if (hasHandTracking) {
-      await _controller!.startImageStream(_processCameraImage);
-    }
-  }
 }
 
 class _HandResult {
