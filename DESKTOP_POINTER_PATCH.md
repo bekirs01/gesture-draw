@@ -93,6 +93,20 @@ function drawStrokesToCanvas(w, h) {
 }
 ```
 
+## Kanal aboneliği (önemli)
+
+Sunum web sitesi **aynı Supabase kanalına** abone olmalı. Kanal adı: `pdf_page_strokes:` + shareId (share token).
+
+Örnek:
+```javascript
+const channel = supabase.channel('pdf_page_strokes:' + shareId);
+channel.on('broadcast', { event: 'pointer_position' }, (payload) => { ... });
+channel.on('broadcast', { event: 'pointer_hidden' }, (payload) => { ... });
+channel.subscribe();
+```
+
+`subscribeStrokes(shareId, callback)` zaten bu kanala abone oluyorsa, callback içine yukarıdaki pointer bloklarını eklemeniz yeterli.
+
 ## Realtime mesaj formatı
 
 Mobil uygulama şu event'leri broadcast eder:

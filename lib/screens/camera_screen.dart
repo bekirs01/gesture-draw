@@ -55,7 +55,7 @@ class _CameraScreenState extends State<CameraScreen> {
   int _framesSinceDraw = 999;
   int _framesSinceErase = 999;
   static const _gestureLockFrames = 3;
-  static const _pinchReleaseFrames = 4;
+  static const _pinchReleaseFrames = 8;
 
   List<Map<String, double>> _currentStrokePoints = [];
 
@@ -247,9 +247,9 @@ class _CameraScreenState extends State<CameraScreen> {
           final handSize = math.sqrt(
               math.pow(lm[0].x - lm[9].x, 2) + math.pow(lm[0].y - lm[9].y, 2));
 
-          // Sadece işaret ve başparmak dokunduğunda yaz - yakın/uzak aynı kural
-          final pinchStartThreshold = (handSize * 0.12).clamp(0.012, 0.038);
-          final pinchReleaseThreshold = (handSize * 0.20).clamp(0.02, 0.06);
+          // Sadece işaret ve başparmak dokunduğunda yaz - daha hassas dokunma, daha toleranslı bırakma
+          final pinchStartThreshold = (handSize * 0.10).clamp(0.010, 0.035);
+          final pinchReleaseThreshold = (handSize * 0.28).clamp(0.03, 0.09);
 
           final pinchDist = math.sqrt(
               math.pow(lm[4].x - lm[8].x, 2) + math.pow(lm[4].y - lm[8].y, 2));
@@ -426,9 +426,9 @@ class _CameraScreenState extends State<CameraScreen> {
             math.pow(wrist.location.x - middleMCP.location.x, 2) +
                 math.pow(wrist.location.y - middleMCP.location.y, 2)) / maxDim;
       }
-      // Sadece işaret ve başparmak dokunduğunda yaz - yakın/uzak aynı kural
-      final pinchStartT = (handSize * 0.12).clamp(0.012, 0.038);
-      final pinchReleaseT = (handSize * 0.20).clamp(0.02, 0.06);
+      // Sadece işaret ve başparmak dokunduğunda yaz - daha hassas dokunma, daha toleranslı bırakma
+      final pinchStartT = (handSize * 0.10).clamp(0.010, 0.035);
+      final pinchReleaseT = (handSize * 0.28).clamp(0.03, 0.09);
 
       double pinchDist = 1.0;
       if (thumbTip != null) {

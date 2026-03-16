@@ -53,6 +53,7 @@ class SyncService {
   String _drawColor = '#00ff9f';
 
   WebSocket? _realtimeSocket;
+  String _joinRef = '1';
   int _lastPointerBroadcastTime = 0;
   static const _pointerBroadcastDebounceMs = 8;
   Timer? _heartbeatTimer;
@@ -168,11 +169,33 @@ class SyncService {
           }
         },
         'ref': '1',
+        'join_ref': '1',
       });
       _realtimeSocket!.add(joinMsg);
 
       _realtimeSocket!.listen(
-        (data) {},
+        (data) {
+          try {
+            final decoded = jsonDecode(data as String);
+            String? jr;
+            String? ev;
+            dynamic pl;
+            if (decoded is Map<String, dynamic>) {
+              ev = decoded['event'] as String?;
+              pl = decoded['payload'];
+              jr = decoded['join_ref']?.toString();
+            } else if (decoded is List) {
+              if (decoded.length >= 5) {
+                jr = decoded[0]?.toString();
+                ev = decoded[3]?.toString();
+                pl = decoded.length > 4 ? decoded[4] : null;
+              }
+            }
+            if (ev == 'phx_reply' && pl is Map && (pl['status'] == 'ok')) {
+              if (jr != null && jr.isNotEmpty) _joinRef = jr;
+            }
+          } catch (_) {}
+        },
         onError: (_) {},
         onDone: () {},
       );
@@ -229,6 +252,7 @@ class SyncService {
         'event': 'broadcast',
         'payload': payload,
         'ref': 'b',
+        'join_ref': _joinRef,
       }));
     } catch (_) {}
   }
