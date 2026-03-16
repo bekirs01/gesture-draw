@@ -7,7 +7,9 @@ import 'package:apple_vision_hand/apple_vision_hand.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
+import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import 'package:hand_landmarker/hand_landmarker.dart' as hl;
+import '../widgets/skeleton_overlay.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../services/sync_service.dart';
 
@@ -39,7 +41,10 @@ class _CameraScreenState extends State<CameraScreen> {
   List<Map<String, double>> _currentStroke = [];
   bool _wasPinching = false;
   bool _wasErasing = false;
-  int _frameSkip = 0;
+  bool _fingersSpread = true;
+  static const _pointerSmoothFactor = 0.58;
+  double? _prevPointerX;
+  double? _prevPointerY;
 
   hl.HandLandmarkerPlugin? _handPlugin;
   AppleVisionHandController? _appleVisionController;
@@ -55,10 +60,18 @@ class _CameraScreenState extends State<CameraScreen> {
   String _faceGesture = '';
   Rect? _faceRect;
 
-  static const _pinchStart = 0.12;
-  static const _pinchRelease = 0.15;
-  static const _eraseStart = 0.12;
-  static const _eraseRelease = 0.16;
+  // Vücut iskelet takibi
+  late PoseDetector _poseDetector;
+  bool _isPoseDetecting = false;
+  Pose? _pose;
+  Size _poseImageSize = Size.zero;
+  Size _lastImageSize = const Size(640, 480);
+  List<Offset>? _handSkeletonPoints;
+
+  static const _pinchStart = 0.055;
+  static const _pinchRelease = 0.095;
+  static const _eraseStart = 0.055;
+  static const _eraseRelease = 0.095;
 
   @override
   void initState() {
@@ -70,6 +83,12 @@ class _CameraScreenState extends State<CameraScreen> {
         enableTracking: true,
         enableLandmarks: true,
         performanceMode: FaceDetectorMode.fast,
+      ),
+    );
+    _poseDetector = PoseDetector(
+      options: PoseDetectorOptions(
+        model: PoseDetectionModel.base,
+        mode: PoseDetectionMode.stream,
       ),
     );
     _init();
@@ -169,8 +188,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
   void _processCameraImage(CameraImage image) {
     if (!mounted) return;
-    _frameSkip++;
-    if (_frameSkip % 2 != 0) return;
+    _lastImageSize = Size(image.width.toDouble(), image.height.toDouble());
 
     if (!_isDetecting) {
       if (Platform.isAndroid && _handPlugin != null) {
@@ -183,18 +201,17 @@ class _CameraScreenState extends State<CameraScreen> {
     if (!_isFaceDetecting) {
       _detectFace(image);
     }
+
+    if (!_isPoseDetecting) {
+      _detectPose(image);
+    }
   }
 
   InputImage? _buildInputImage(CameraImage image) {
     final camera = _cameras[_cameraIndex];
     final sensorOrientation = camera.sensorOrientation;
-    InputImageRotation? rotation;
-    if (Platform.isIOS) {
-      rotation = InputImageRotation.rotation0deg;
-    } else {
-      rotation = InputImageRotationValue.fromRawValue(sensorOrientation);
-    }
-    if (rotation == null) return null;
+    InputImageRotation? rotation = InputImageRotationValue.fromRawValue(sensorOrientation);
+    if (rotation == null) rotation = InputImageRotation.rotation0deg;
 
     final format = InputImageFormatValue.fromRawValue(image.format.raw);
     if (format == null) return null;
@@ -302,6 +319,33 @@ class _CameraScreenState extends State<CameraScreen> {
     _isFaceDetecting = false;
   }
 
+  Future<void> _detectPose(CameraImage image) async {
+    _isPoseDetecting = true;
+    try {
+      final inputImage = _buildInputImage(image);
+      if (inputImage == null) {
+        _isPoseDetecting = false;
+        return;
+      }
+      final poses = await _poseDetector.processImage(inputImage);
+      if (!mounted) return;
+      if (poses.isEmpty) {
+        setState(() {
+          _pose = null;
+          _poseImageSize = Size.zero;
+        });
+      } else {
+        setState(() {
+          _pose = poses.first;
+          _poseImageSize = Size(image.width.toDouble(), image.height.toDouble());
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _pose = null);
+    }
+    _isPoseDetecting = false;
+  }
+
   void _processAndroidImage(CameraImage image) {
     if (_handPlugin == null) return;
     _isDetecting = true;
@@ -318,14 +362,22 @@ class _CameraScreenState extends State<CameraScreen> {
         if (hand.landmarks.length >= 21) {
           final thumbTip = hand.landmarks[4];
           final indexTip = hand.landmarks[8];
+          final indexPIP = hand.landmarks[6];
           final middleTip = hand.landmarks[12];
+          final middlePIP = hand.landmarks[10];
+          final ringTip = hand.landmarks[16];
 
-          final pinchDist = math.sqrt(
-            math.pow(thumbTip.x - indexTip.x, 2) + math.pow(thumbTip.y - indexTip.y, 2),
-          );
-          final indexMiddleDist = math.sqrt(
-            math.pow(indexTip.x - middleTip.x, 2) + math.pow(indexTip.y - middleTip.y, 2),
-          );
+          double _dist(a, b) => math.sqrt(math.pow(a.x - b.x, 2) + math.pow(a.y - b.y, 2));
+
+          final pinchDistTip = _dist(thumbTip, indexTip);
+          final pinchDistPIP = _dist(thumbTip, indexPIP);
+          final pinchDist = math.min(pinchDistTip, pinchDistPIP);
+
+          final indexMiddleDistTip = _dist(indexTip, middleTip);
+          final indexMiddleDistPIP = _dist(indexPIP, middlePIP);
+          final indexMiddleDist = math.min(indexMiddleDistTip, indexMiddleDistPIP);
+
+          final indexRingDist = _dist(indexTip, ringTip);
 
           final isPinching = _wasPinching
               ? pinchDist < _pinchRelease
@@ -337,18 +389,31 @@ class _CameraScreenState extends State<CameraScreen> {
               : indexMiddleDist < _eraseStart;
           _wasErasing = isErasing;
 
-          final isFrontCamera = _cameraIndex < _cameras.length &&
-              _cameras[_cameraIndex].lensDirection == CameraLensDirection.front;
-          final x = isFrontCamera ? 1.0 - indexTip.x : indexTip.x;
+          final avgSpread = (indexMiddleDist + indexRingDist) / 2;
+          final fingersSpread = avgSpread > 0.08;
+
+          double ptrX = indexTip.x;
+          double ptrY = indexTip.y;
+
+          final imgW = image.width.toDouble();
+          final imgH = image.height.toDouble();
+          final pts = <Offset>[];
+          for (final lm in hand.landmarks) {
+            pts.add(Offset(lm.x * imgW, lm.y * imgH));
+          }
+          if (pts.length >= 21) _handSkeletonPoints = pts;
+
           _updateHandState(
             _HandState(
-              indexTipX: x,
-              indexTipY: indexTip.y,
+              indexTipX: ptrX,
+              indexTipY: ptrY,
               isPinching: isPinching,
               isErasing: isErasing,
+              fingersSpread: fingersSpread,
             ),
           );
         } else {
+          _handSkeletonPoints = null;
           _updateHandState(null);
         }
       }
@@ -441,50 +506,90 @@ class _CameraScreenState extends State<CameraScreen> {
       final handData = results.first;
       Hand? thumbTip = _findPose(handData.poses, FingerJoint.thumbTip);
       Hand? indexTip = _findPose(handData.poses, FingerJoint.indexTip);
+      Hand? indexPIP = _findPose(handData.poses, FingerJoint.indexPIP);
       Hand? middleTip = _findPose(handData.poses, FingerJoint.middleTip);
+      Hand? middlePIP = _findPose(handData.poses, FingerJoint.middlePIP);
+      Hand? ringTip = _findPose(handData.poses, FingerJoint.ringTip);
       if (indexTip == null) {
         indexTip = _getPoseByIndex(handData.poses, 7);
       }
-      if (indexTip == null) {
+      Hand? ptrHand = indexTip ?? thumbTip ?? middleTip;
+      if (ptrHand == null) {
         _updateHandState(null);
         return;
       }
 
       final imgSize = handData.imageSize;
+      final maxDim = math.max(imgSize.width, imgSize.height);
       bool isPinching = false;
       bool isErasing = false;
-      if (thumbTip != null) {
-        final pinchDist = math.sqrt(
-          math.pow(thumbTip.location.x - indexTip!.location.x, 2) +
-              math.pow(thumbTip.location.y - indexTip.location.y, 2),
-        );
-        final maxDim = math.max(imgSize.width, imgSize.height);
-        final pinchNorm = pinchDist / maxDim;
+      bool fingersSpread = true;
+
+      double _dist(a, b) => math.sqrt(
+          math.pow(a.location.x - b.location.x, 2) +
+              math.pow(a.location.y - b.location.y, 2));
+
+      if (thumbTip != null && indexTip != null) {
+        final pinchTip = _dist(thumbTip, indexTip) / maxDim;
+        final pinchPIP = indexPIP != null
+            ? _dist(thumbTip, indexPIP) / maxDim
+            : 1.0;
+        final pinchNorm = math.min(pinchTip, pinchPIP);
         isPinching = _wasPinching ? pinchNorm < _pinchRelease : pinchNorm < _pinchStart;
         _wasPinching = isPinching;
       } else {
         _wasPinching = false;
       }
-      if (middleTip != null) {
-        final indexMiddleDist = math.sqrt(
-          math.pow(indexTip!.location.x - middleTip.location.x, 2) +
-              math.pow(indexTip.location.y - middleTip.location.y, 2),
-        );
-        final maxDim = math.max(imgSize.width, imgSize.height);
-        final eraseNorm = indexMiddleDist / maxDim;
+      if (middleTip != null && indexTip != null) {
+        final eraseTip = _dist(indexTip, middleTip) / maxDim;
+        final erasePIP = (indexPIP != null && middlePIP != null)
+            ? _dist(indexPIP, middlePIP) / maxDim
+            : 1.0;
+        final eraseNorm = math.min(eraseTip, erasePIP);
         isErasing = _wasErasing ? eraseNorm < _eraseRelease : eraseNorm < _eraseStart;
         _wasErasing = isErasing;
+        if (ringTip != null) {
+          final indexRingDist = _dist(indexTip, ringTip);
+          final indexMiddleDist = _dist(indexTip, middleTip);
+          final spreadNorm = (indexMiddleDist + indexRingDist) / 2 / maxDim;
+          fingersSpread = spreadNorm > 0.08;
+        }
       } else {
         _wasErasing = false;
       }
 
-      double normX = indexTip.location.x / imgSize.width;
-      double normY = indexTip.location.y / imgSize.height;
-      if (_cameras[_cameraIndex].lensDirection == CameraLensDirection.front) {
-        normX = 1.0 - normX;
-      }
+      double normX = ptrHand.location.x / imgSize.width;
+      double normY = ptrHand.location.y / imgSize.height;
       normX = normX.clamp(0.0, 1.0);
       normY = normY.clamp(0.0, 1.0);
+
+      final pts = <Offset>[];
+      final byJoint = <FingerJoint, Hand>{};
+      for (final j in FingerJoint.values) {
+        final p = _findPose(handData.poses, j);
+        if (p != null) byJoint[j] = p;
+      }
+      final thumbCMC = byJoint[FingerJoint.thumbCMC];
+      final indexMCP = byJoint[FingerJoint.indexMCP];
+      final middleMCP = byJoint[FingerJoint.middleMCP];
+      if (thumbCMC != null && indexMCP != null && middleMCP != null) {
+        pts.add(Offset(
+          (thumbCMC.location.x + indexMCP.location.x + middleMCP.location.x) / 3,
+          (thumbCMC.location.y + indexMCP.location.y + middleMCP.location.y) / 3,
+        ));
+      }
+      final order = [
+        FingerJoint.thumbCMC, FingerJoint.thumbIP, FingerJoint.thumbMP, FingerJoint.thumbTip,
+        FingerJoint.indexMCP, FingerJoint.indexPIP, FingerJoint.indexDIP, FingerJoint.indexTip,
+        FingerJoint.middleMCP, FingerJoint.middlePIP, FingerJoint.middleDIP, FingerJoint.middleTip,
+        FingerJoint.ringMCP, FingerJoint.ringPIP, FingerJoint.ringDIP, FingerJoint.ringTip,
+        FingerJoint.littleMCP, FingerJoint.littlePIP, FingerJoint.littleDIP, FingerJoint.littleTip,
+      ];
+      for (final j in order) {
+        final p = byJoint[j];
+        if (p != null) pts.add(Offset(p.location.x, p.location.y));
+      }
+      if (pts.length >= 21) _handSkeletonPoints = pts;
 
       _updateHandState(
         _HandState(
@@ -492,10 +597,14 @@ class _CameraScreenState extends State<CameraScreen> {
           indexTipY: normY,
           isPinching: isPinching,
           isErasing: isErasing,
+          fingersSpread: fingersSpread,
         ),
       );
     } catch (_) {
-      if (mounted) _updateHandState(null);
+      if (mounted) {
+        _handSkeletonPoints = null;
+        _updateHandState(null);
+      }
     }
     _isDetecting = false;
   }
@@ -505,6 +614,9 @@ class _CameraScreenState extends State<CameraScreen> {
       setState(() {
         _pointerX = null;
         _pointerY = null;
+        _prevPointerX = null;
+        _prevPointerY = null;
+        _handSkeletonPoints = null;
         if (_currentStroke.length >= 2) {
           _sync.saveStroke(_currentStroke);
         }
@@ -516,25 +628,36 @@ class _CameraScreenState extends State<CameraScreen> {
       return;
     }
 
+    double smoothX = state.indexTipX;
+    double smoothY = state.indexTipY;
+    if (_prevPointerX != null && _prevPointerY != null) {
+      smoothX = _prevPointerX! + (state.indexTipX - _prevPointerX!) * _pointerSmoothFactor;
+      smoothY = _prevPointerY! + (state.indexTipY - _prevPointerY!) * _pointerSmoothFactor;
+    }
+    _prevPointerX = smoothX;
+    _prevPointerY = smoothY;
+
     setState(() {
-      _pointerX = state.indexTipX;
-      _pointerY = state.indexTipY;
+      _pointerX = smoothX;
+      _pointerY = smoothY;
       _isPinching = state.isPinching;
       _isErasing = state.isErasing;
+      _fingersSpread = state.fingersSpread;
 
       if (state.isErasing) {
         if (_currentStroke.isNotEmpty) _currentStroke = [];
         _sync.erase();
         _statusText = 'İşaret+Orta - Siliniyor';
       } else if (state.isPinching) {
-        _currentStroke.add({'x': state.indexTipX, 'y': state.indexTipY});
+        _currentStroke.add({'x': smoothX, 'y': smoothY});
         _statusText = 'Çizim (başparmak+işaret)';
       } else {
         if (_currentStroke.length >= 2) {
           _sync.saveStroke(_currentStroke);
         }
         _currentStroke = [];
-        _statusText = 'Başparmak+İşaret = Çiz | İşaret+Orta = Sil';
+        final spreadText = state.fingersSpread ? 'Parmaklar açık' : 'Parmaklar kapalı';
+        _statusText = '$spreadText • Başparmak+İşaret = Çiz | İşaret+Orta = Sil';
       }
     });
   }
@@ -545,6 +668,7 @@ class _CameraScreenState extends State<CameraScreen> {
     _controller?.dispose();
     _handPlugin?.dispose();
     _faceDetector.close();
+    _poseDetector.close();
     super.dispose();
   }
 
@@ -628,66 +752,28 @@ class _CameraScreenState extends State<CameraScreen> {
         fit: StackFit.expand,
         children: [
           _buildCameraPreview(),
-          if (_pointerX != null && _pointerY != null)
-            Positioned(
-              left: _pointerX! * MediaQuery.of(context).size.width - 12,
-              top: _pointerY! * MediaQuery.of(context).size.height - 12,
-              child: Container(
-                width: 24,
-                height: 24,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: _isPinching
-                      ? const Color(0xFF00FF9F)
-                      : _isErasing
-                          ? Colors.red
-                          : Colors.white.withValues(alpha: 0.7),
-                  border: Border.all(color: Colors.white, width: 2),
-                ),
+          if (_pose != null || (_handSkeletonPoints != null && _handSkeletonPoints!.length >= 21))
+            Positioned.fill(
+              child: SkeletonOverlay(
+                pose: _pose,
+                handPoints: _handSkeletonPoints,
+                imageSize: _poseImageSize.width > 0 ? _poseImageSize : _lastImageSize,
+                screenSize: MediaQuery.of(context).size,
+                isPinching: _isPinching,
+                isErasing: _isErasing,
               ),
             ),
-          // Yüz çerçevesi
-          if (_faceRect != null)
+          if (_pointerX != null && _pointerY != null && !_isPinching && !_isErasing)
             Positioned(
-              left: _faceRect!.left,
-              top: _faceRect!.top,
+              left: _pointerX! * MediaQuery.of(context).size.width - 10,
+              top: _pointerY! * MediaQuery.of(context).size.height - 10,
               child: Container(
-                width: _faceRect!.width,
-                height: _faceRect!.height,
+                width: 20,
+                height: 20,
                 decoration: BoxDecoration(
-                  border: Border.all(
-                    color: _isSmiling ? const Color(0xFF00FF9F) : Colors.yellow,
-                    width: 2,
-                  ),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Align(
-                  alignment: Alignment.topLeft,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: Colors.black54,
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          _leftEyeOpen ? '👁' : '😑',
-                          style: const TextStyle(fontSize: 12),
-                        ),
-                        const SizedBox(width: 2),
-                        Text(
-                          _rightEyeOpen ? '👁' : '😑',
-                          style: const TextStyle(fontSize: 12),
-                        ),
-                        if (_isSmiling) ...[
-                          const SizedBox(width: 2),
-                          const Text('😊', style: TextStyle(fontSize: 12)),
-                        ],
-                      ],
-                    ),
-                  ),
+                  shape: BoxShape.circle,
+                  color: Colors.white.withValues(alpha: 0.3),
+                  border: Border.all(color: Colors.white.withValues(alpha: 0.6), width: 1.5),
                 ),
               ),
             ),
@@ -740,10 +826,12 @@ class _CameraScreenState extends State<CameraScreen> {
                       ),
                     ),
                     IconButton(
-                      onPressed: _cameras.length > 1 ? _switchCamera : null,
+                      onPressed: _canSwitchCamera() ? _switchCamera : null,
                       icon: const Icon(Icons.cameraswitch,
                           color: Colors.white, size: 24),
-                      tooltip: 'Ön/Arka kamera',
+                      tooltip: _cameras[_cameraIndex].lensDirection == CameraLensDirection.front
+                          ? 'Arka kameraya geç'
+                          : 'Ön kameraya geç',
                     ),
                   ],
                 ),
@@ -786,11 +874,23 @@ class _CameraScreenState extends State<CameraScreen> {
     );
   }
 
+  bool _canSwitchCamera() {
+    if (_cameras.isEmpty) return false;
+    final hasFront = _cameras.any((c) => c.lensDirection == CameraLensDirection.front);
+    final hasBack = _cameras.any((c) => c.lensDirection == CameraLensDirection.back);
+    return hasFront && hasBack;
+  }
+
   Future<void> _switchCamera() async {
-    if (!_isInitialized || _cameras.length < 2) return;
+    if (!_isInitialized || _cameras.isEmpty) return;
+    final isFront = _cameras[_cameraIndex].lensDirection == CameraLensDirection.front;
+    final nextIndex = isFront
+        ? _cameras.indexWhere((c) => c.lensDirection == CameraLensDirection.back)
+        : _cameras.indexWhere((c) => c.lensDirection == CameraLensDirection.front);
+    if (nextIndex < 0) return;
     await _controller?.stopImageStream();
     await _controller?.dispose();
-    _cameraIndex = (_cameraIndex + 1) % _cameras.length;
+    _cameraIndex = nextIndex;
     await _initCamera();
     if (mounted) setState(() {});
     final hasHandTracking = (Platform.isAndroid && _handPlugin != null) ||
@@ -806,10 +906,12 @@ class _HandState {
   final double indexTipY;
   final bool isPinching;
   final bool isErasing;
+  final bool fingersSpread;
   _HandState({
     required this.indexTipX,
     required this.indexTipY,
     required this.isPinching,
     required this.isErasing,
+    this.fingersSpread = true,
   });
 }

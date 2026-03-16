@@ -17,6 +17,7 @@ dependencies:
   hand_landmarker: ^2.2.0
   apple_vision_hand: ^0.0.3
   google_mlkit_face_detection: ^0.13.2
+  google_mlkit_pose_detection: ^0.14.1
 
 dev_dependencies:
   flutter_test:
