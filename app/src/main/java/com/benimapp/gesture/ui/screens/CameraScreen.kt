@@ -160,10 +160,11 @@ fun CameraScreen(
                                 }
                             } else if (state.isErasing) {
                                 syncRepository.sendPointerHidden()
-                                syncRepository.sendEraseAtPosition(state.eraserX, state.eraserY)
                                 if (currentDrawingPoints.isNotEmpty()) {
+                                    syncRepository.sendDrawEvent(0f, 0f, isDrawing = false, discardStroke = true)
                                     currentDrawingPoints.clear()
                                 }
+                                syncRepository.sendEraseAtPosition(state.eraserX, state.eraserY)
                                 savedStrokes = syncRepository.getCachedStrokes()
                             } else if (state.isPinching) {
                                 syncRepository.sendPointerHidden()

@@ -54,8 +54,8 @@ class HandLandmarkerHelper(
         private const val CURSOR_SMOOTH = 0.5f
         private const val ERASE_SMOOTH = 0.52f
         private const val MIN_STROKE_DIST = 0.002f
-        private const val GESTURE_LOCK_FRAMES = 3
-        private const val PINCH_RELEASE_FRAMES = 4
+        private const val GESTURE_LOCK_FRAMES = 12
+        private const val PINCH_RELEASE_FRAMES = 12
     }
 
     private var wasPinching = false
@@ -142,7 +142,7 @@ class HandLandmarkerHelper(
             twoFingerHeldFrames = 0
         }
 
-        val eraseActive = twoFingerHeldFrames >= 2 && framesSinceDraw >= GESTURE_LOCK_FRAMES
+        val eraseActive = twoFingerHeldFrames >= 5 && framesSinceDraw >= GESTURE_LOCK_FRAMES
 
         val rawPinch = pinchDist < if (wasPinching) pinchReleaseThreshold else pinchStartThreshold
 

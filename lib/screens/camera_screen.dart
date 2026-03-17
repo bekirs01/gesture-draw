@@ -55,8 +55,10 @@ class _CameraScreenState extends State<CameraScreen> {
   int _twoFingerHeldFrames = 0;
   int _framesSinceDraw = 999;
   int _framesSinceErase = 999;
-  static const _gestureLockFrames = 6;
-  static const _pinchReleaseFrames = 8;
+  /// Çizimden silmeye geçişte yanlış tetiklemeyi önlemek için daha uzun bekleme
+  static const _gestureLockFrames = 12;
+  /// Pinch bırakıldıktan sonra erase'e geçmeden önce beklenecek frame
+  static const _pinchReleaseFrames = 12;
 
   List<Map<String, double>> _currentStrokePoints = [];
 
@@ -320,7 +322,7 @@ class _CameraScreenState extends State<CameraScreen> {
           }
 
           final eraseActive =
-              _twoFingerHeldFrames >= 3 && _framesSinceDraw >= _gestureLockFrames;
+              _twoFingerHeldFrames >= 5 && _framesSinceDraw >= _gestureLockFrames;
 
           final rawPinch = pinchDist <
               (_wasPinching ? pinchReleaseThreshold : pinchStartThreshold);
@@ -490,13 +492,14 @@ class _CameraScreenState extends State<CameraScreen> {
 
       final rawPinch = pinchDist < (_wasPinching ? pinchReleaseT : pinchStartT);
 
+      /// İşaret + orta parmak açık - ister birleşik ister ayrı olsun silme tetiklensin
       bool eraseActive = false;
       if (middleTip != null) {
         final eraseDist = math.sqrt(
             math.pow(indexTip.location.x - middleTip.location.x, 2) +
                 math.pow(indexTip.location.y - middleTip.location.y, 2)) / maxDim;
-        if (eraseDist < 0.07) { _twoFingerHeldFrames++; } else { _twoFingerHeldFrames = 0; }
-        eraseActive = _twoFingerHeldFrames >= 3 && _framesSinceDraw >= _gestureLockFrames;
+        if (eraseDist < 0.18) { _twoFingerHeldFrames++; } else { _twoFingerHeldFrames = 0; }
+        eraseActive = _twoFingerHeldFrames >= 4 && _framesSinceDraw >= _gestureLockFrames;
       }
 
       bool pinchActive;

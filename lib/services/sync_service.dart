@@ -61,8 +61,8 @@ class SyncService {
   int _lastEraseApplyTime = 0;
   int _lastErasePersistTime = 0;
   static const _broadcastDebounceMs = 50;
-  static const _eraseApplyDebounceMs = 22;
-  static const _erasePersistDebounceMs = 35;
+  static const _eraseApplyDebounceMs = 4;
+  static const _erasePersistDebounceMs = 12;
 
   static const _eraseRadius = 0.12;
   static const _eraseRadiusSq = _eraseRadius * _eraseRadius;

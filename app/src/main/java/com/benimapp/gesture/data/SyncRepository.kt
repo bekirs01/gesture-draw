@@ -188,7 +188,7 @@ class SyncRepository(private val projectLink: String) {
         try { realtimeSocket?.send(msg) } catch (e: Exception) { Log.w(TAG, "Pointer hidden hatası", e) }
     }
 
-    fun sendDrawEvent(camX: Float, camY: Float, isDrawing: Boolean) {
+    fun sendDrawEvent(camX: Float, camY: Float, isDrawing: Boolean, discardStroke: Boolean = false) {
         if (shareToken == null) return
 
         val docX = mirrorX(camX)
@@ -206,6 +206,10 @@ class SyncRepository(private val projectLink: String) {
             }
             this.isDrawing -> {
                 this.isDrawing = false
+                if (discardStroke) {
+                    currentStrokePoints.clear()
+                    return
+                }
                 if (currentStrokePoints.size >= 2) {
                     val simplified = simplifyPoints(currentStrokePoints, DP_EPSILON)
                     val stroke = StrokeData(points = simplified, color = "#00ff9f", lineWidth = 4)
