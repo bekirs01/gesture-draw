@@ -110,11 +110,10 @@ class SyncService {
     final now = DateTime.now().millisecondsSinceEpoch;
     if (now - _lastPointerBroadcastTime < _pointerBroadcastDebounceMs) return;
     _lastPointerBroadcastTime = now;
-    final docX = mirrorX(x);
     _sendBroadcast({
       'type': 'broadcast',
       'event': 'pointer_position',
-      'payload': {'pageNum': pageNum, 'x': docX, 'y': y},
+      'payload': {'pageNum': pageNum, 'x': _toPdfX(x), 'y': _toPdfY(y)},
     });
   }
 
@@ -129,19 +128,23 @@ class SyncService {
 
   void sendTapAtPosition(double x, double y) {
     if (shareToken == null) return;
-    final docX = mirrorX(x);
     _sendBroadcast({
       'type': 'broadcast',
       'event': 'tap_at',
-      'payload': {'pageNum': pageNum, 'x': docX, 'y': y},
+      'payload': {'pageNum': pageNum, 'x': _toPdfX(x), 'y': _toPdfY(y)},
     });
   }
 
   String get drawColor => _drawColor;
 
-  // Bu cihazdaki kamera akışında el koordinatları zaten doğru yönde geliyor.
-  // Tekrar aynalama yapınca çizim tersine dönüyor.
   double mirrorX(double camX) => camX;
+
+  /// Mobil: üst-sol (0,0), PDF: sol-alt (0,0) - Y ekseni ters
+  /// Ayrıca ön kamera ayna görüntüsü için X çevrilir
+  double _toPdfX(double x) => 1.0 - x;
+  double _toPdfY(double y) => 1.0 - y;
+  double _fromPdfX(double x) => 1.0 - x;
+  double _fromPdfY(double y) => 1.0 - y;
 
   Future<void> _loadInitialStrokes() async {
     try {
@@ -218,13 +221,14 @@ class SyncService {
     if (now - _lastBroadcastTime < _broadcastDebounceMs) return;
     _lastBroadcastTime = now;
 
+    final pdfPoints = points.map((p) => {'x': _toPdfX(p['x']!), 'y': _toPdfY(p['y']!)}).toList();
     final payload = {
       'type': 'broadcast',
       'event': 'stroke_progress',
       'payload': {
         'pageNum': pageNum,
         'stroke': {
-          'points': points,
+          'points': pdfPoints,
           'color': _drawColor,
           'lineWidth': 4,
         },
@@ -234,12 +238,17 @@ class SyncService {
   }
 
   void _broadcastStrokeComplete(List<StrokeData> strokes) {
+    final pdfStrokes = strokes.map((s) => StrokeData(
+      points: s.points.map((p) => {'x': _toPdfX(p['x']!), 'y': _toPdfY(p['y']!)}).toList(),
+      color: s.color,
+      lineWidth: s.lineWidth,
+    )).toList();
     final payload = {
       'type': 'broadcast',
       'event': 'stroke',
       'payload': {
         'pageNum': pageNum,
-        'strokes': strokes.map((s) => s.toJson()).toList(),
+        'strokes': pdfStrokes.map((s) => s.toJson()).toList(),
       },
     };
     _sendBroadcast(payload);
@@ -324,7 +333,7 @@ class SyncService {
     _lastErasePersistTime = DateTime.now().millisecondsSinceEpoch;
     final snapshot = List<StrokeData>.from(_cachedStrokes);
     try {
-      await _upsert(snapshot.map((s) => s.toJson()).toList());
+      await _upsert(_strokesToPdfJson(snapshot));
       _broadcastStrokeComplete(snapshot);
     } catch (_) {
       // Sessiz geç: bir sonraki döngüde tekrar denenecek.
@@ -374,17 +383,25 @@ class SyncService {
     return segments;
   }
 
+  List<Map<String, dynamic>> _strokesToPdfJson(List<StrokeData> strokes) {
+    return strokes.map((s) => StrokeData(
+      points: s.points.map((p) => {'x': _toPdfX(p['x']!), 'y': _toPdfY(p['y']!)}).toList(),
+      color: s.color,
+      lineWidth: s.lineWidth,
+    ).toJson()).toList();
+  }
+
   void _saveStroke(List<Map<String, double>> points) async {
     final stroke = StrokeData(points: points, color: _drawColor);
     try {
       final existing = await _fetchStrokes();
       final all = [...existing, stroke];
       _cachedStrokes = all;
-      await _upsert(all.map((s) => s.toJson()).toList());
+      await _upsert(_strokesToPdfJson(all));
       _broadcastStrokeComplete(all);
     } catch (_) {
       _cachedStrokes.add(stroke);
-      await _upsert([stroke.toJson()]);
+      await _upsert(_strokesToPdfJson(_cachedStrokes));
       _broadcastStrokeComplete(_cachedStrokes);
     }
   }
@@ -404,9 +421,17 @@ class SyncService {
     if (list == null || list.isEmpty) return [];
     final strokes = list.first['strokes'];
     if (strokes is List) {
-      return strokes
-          .map((s) => StrokeData.fromJson(s as Map<String, dynamic>))
-          .toList();
+      return strokes.map((s) {
+        final data = s as Map<String, dynamic>;
+        final pts = (data['points'] as List<dynamic>?)?.map((p) {
+          final m = p as Map<String, dynamic>;
+          return {
+            'x': _fromPdfX((m['x'] as num).toDouble()),
+            'y': _fromPdfY((m['y'] as num).toDouble()),
+          };
+        }).toList() ?? [];
+        return StrokeData(points: pts, color: data['color'] as String? ?? '#00ff9f', lineWidth: (data['lineWidth'] as num?)?.toInt() ?? 4);
+      }).toList();
     }
     return [];
   }

@@ -76,6 +76,27 @@ class _CameraScreenState extends State<CameraScreen> {
     if (_cameras.isNotEmpty && _cameras[_cameraIndex].lensDirection == CameraLensDirection.back) {
       y = 1.0 - y;
     }
+    final deviceOri = _controller?.value.deviceOrientation;
+    if (deviceOri != null) {
+      switch (deviceOri) {
+        case DeviceOrientation.portraitUp:
+          break;
+        case DeviceOrientation.portraitDown:
+          x = 1.0 - x;
+          y = 1.0 - y;
+          break;
+        case DeviceOrientation.landscapeLeft:
+          final tmp = x;
+          x = y;
+          y = 1.0 - tmp;
+          break;
+        case DeviceOrientation.landscapeRight:
+          final tmp = x;
+          x = 1.0 - y;
+          y = tmp;
+          break;
+      }
+    }
     final imgW = _lastImageSize.width;
     final imgH = _lastImageSize.height;
     if (imgW <= 0 || imgH <= 0) return (x, y);
@@ -98,7 +119,11 @@ class _CameraScreenState extends State<CameraScreen> {
   @override
   void initState() {
     super.initState();
-    SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.portraitUp,
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
     _sync = SyncService(widget.projectLink);
     _init();
   }
@@ -184,7 +209,10 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
+  VoidCallback? _controllerListener;
+
   Future<void> _initCamera() async {
+    _controller?.removeListener(_controllerListener ?? () {});
     final cam = _cameras[_cameraIndex];
     _controller = CameraController(
       cam,
@@ -193,9 +221,10 @@ class _CameraScreenState extends State<CameraScreen> {
       imageFormatGroup: Platform.isIOS ? ImageFormatGroup.bgra8888 : ImageFormatGroup.yuv420,
     );
     await _controller!.initialize();
-    if (mounted) {
-      await _controller!.lockCaptureOrientation(DeviceOrientation.portraitUp);
-    }
+    _controllerListener = () {
+      if (mounted) setState(() {});
+    };
+    _controller!.addListener(_controllerListener!);
   }
 
   bool get _hasMultipleCameras =>
@@ -214,6 +243,7 @@ class _CameraScreenState extends State<CameraScreen> {
       _statusText = 'Kamera değiştiriliyor...';
     });
     try {
+      _controller!.removeListener(_controllerListener ?? () {});
       await _controller!.stopImageStream();
       await _controller!.dispose();
       _controller = null;
@@ -669,6 +699,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
   @override
   void dispose() {
+    _controller?.removeListener(_controllerListener ?? () {});
     _controller?.stopImageStream();
     _controller?.dispose();
     _handPlugin?.dispose();
@@ -693,38 +724,32 @@ class _CameraScreenState extends State<CameraScreen> {
     if (!ctrl.value.isInitialized) {
       return const Center(child: CircularProgressIndicator(color: Color(0xFF00FF9F)));
     }
+    final previewSize = ctrl.value.previewSize!;
+    final isPortrait = MediaQuery.of(context).orientation == Orientation.portrait;
+    final previewW = isPortrait ? previewSize.height : previewSize.width;
+    final previewH = isPortrait ? previewSize.width : previewSize.height;
     return LayoutBuilder(
       builder: (context, constraints) {
         final screenW = constraints.maxWidth;
         final screenH = constraints.maxHeight;
-        double w, h;
-        if (screenW / screenH > _pdfAspect) {
-          h = screenH;
-          w = h * _pdfAspect;
-        } else {
-          w = screenW;
-          h = w / _pdfAspect;
-        }
-        final left = (screenW - w) / 2;
-        final top = (screenH - h) / 2;
-        return Stack(
-          fit: StackFit.expand,
-          children: [
-            Positioned.fill(child: Container(color: Colors.black)),
-            Positioned(
-              left: left, top: top, width: w, height: h,
-              child: ClipRect(
-                child: FittedBox(
-                  fit: BoxFit.cover,
-                  child: SizedBox(
-                    width: ctrl.value.previewSize!.height,
-                    height: ctrl.value.previewSize!.width,
-                    child: CameraPreview(ctrl),
-                  ),
+        if (screenW <= 0 || screenH <= 0) return Container(color: Colors.black);
+        final scale = math.max(screenW / previewW, screenH / previewH);
+        return ClipRect(
+          child: SizedBox(
+            width: screenW,
+            height: screenH,
+            child: Center(
+              child: Transform.scale(
+                scale: scale,
+                alignment: Alignment.center,
+                child: SizedBox(
+                  width: previewW,
+                  height: previewH,
+                  child: CameraPreview(ctrl),
                 ),
               ),
             ),
-          ],
+          ),
         );
       },
     );
@@ -785,19 +810,11 @@ class _CameraScreenState extends State<CameraScreen> {
 
     final screenW = MediaQuery.of(context).size.width;
     final screenH = MediaQuery.of(context).size.height;
-    double drawW, drawH, drawLeft, drawTop;
-    if (screenW / screenH > _pdfAspect) {
-      drawH = screenH;
-      drawW = drawH * _pdfAspect;
-      drawLeft = (screenW - drawW) / 2;
-      drawTop = 0;
-    } else {
-      drawW = screenW;
-      drawH = drawW / _pdfAspect;
-      drawLeft = 0;
-      drawTop = (screenH - drawH) / 2;
-    }
-    final contentRect = Rect.fromLTWH(drawLeft, drawTop, drawW, drawH);
+    final contentRect = Rect.fromLTWH(0, 0, screenW, screenH);
+    final drawLeft = contentRect.left;
+    final drawTop = contentRect.top;
+    final drawW = contentRect.width;
+    final drawH = contentRect.height;
 
     return Scaffold(
       backgroundColor: Colors.black,
