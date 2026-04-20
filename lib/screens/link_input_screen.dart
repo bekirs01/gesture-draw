@@ -36,13 +36,13 @@ class _LinkInputScreenState extends State<LinkInputScreen> {
     final trimmed = _linkController.text.trim();
 
     if (trimmed.isEmpty) {
-      setState(() => _error = 'Lütfen bir link girin');
+      setState(() => _error = 'Введите ссылку');
       return;
     }
 
     if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
-      setState(() =>
-          _error = 'Geçerli bir URL girin (http veya https ile başlamalı)');
+      setState(() => _error =
+          'Укажите корректный URL (должен начинаться с http:// или https://)');
       return;
     }
 
@@ -109,7 +109,7 @@ class _LinkInputScreenState extends State<LinkInputScreen> {
                       ),
                       const SizedBox(height: 20),
                       const Text(
-                        'El Hareketi Sunum',
+                        'Презентация жестами',
                         style: TextStyle(
                           fontSize: 24,
                           fontWeight: FontWeight.bold,
@@ -118,7 +118,7 @@ class _LinkInputScreenState extends State<LinkInputScreen> {
                       ),
                       const SizedBox(height: 8),
                       const Text(
-                        'Linki girin, kameranızla sunumunuzu kontrol edin.\nTelefonda sadece kamera açılacak.',
+                        'Введите ссылку и управляйте презентацией с камеры.\nНа телефоне откроется только камера.',
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           fontSize: 14,
@@ -137,10 +137,10 @@ class _LinkInputScreenState extends State<LinkInputScreen> {
                         autocorrect: false,
                         style: const TextStyle(color: Colors.white),
                         decoration: InputDecoration(
-                          labelText: 'Proje Linki',
+                          labelText: 'Ссылка на проект',
                           labelStyle:
                               const TextStyle(color: Color(0xFF90A4AE)),
-                          hintText: 'https://...?id=SHARE_TOKEN',
+                          hintText: 'https://...?id=ТОКЕН',
                           hintStyle:
                               const TextStyle(color: Color(0xFF546E7A)),
                           errorText: _error,
@@ -178,12 +178,12 @@ class _LinkInputScreenState extends State<LinkInputScreen> {
                               fontWeight: FontWeight.bold,
                             ),
                           ),
-                          child: const Text('Kamerayı Aç'),
+                          child: const Text('Открыть камеру'),
                         ),
                       ),
                       const SizedBox(height: 16),
                       const Text(
-                        'Başparmak+İşaret = Çiz  |  İşaret+Orta = Sil',
+                        'Большой палец + указательный = рисование  |  Указательный + средний = стирание',
                         style: TextStyle(
                             fontSize: 12, color: Color(0xFF78909C)),
                         textAlign: TextAlign.center,

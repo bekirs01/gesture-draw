@@ -19,7 +19,7 @@ class BenimApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'El Hareketi Sunum',
+      title: 'Презентация жестами',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
